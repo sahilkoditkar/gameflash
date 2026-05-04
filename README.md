@@ -40,9 +40,21 @@ Then open `http://localhost:8080/`.
 
 Dash into a non-dashing opponent to hit them. Both dashing = bounce, no damage.
 
+## Verify
+
+`scripts/verify.mjs` runs three checks:
+
+- `node --check` syntax on every file under `src/`
+- `manifest.webmanifest` is valid JSON with the required keys
+- every path in `sw.js`'s `SHELL_PATHS` list exists on disk (catches the precache list silently rotting when files move)
+
+Run it locally with `node scripts/verify.mjs`. CI runs the same script on every push and pull request.
+
 ## Deploy to GitHub Pages
 
-Push to `main` and enable Pages from the repository root. No build step required. The service worker activates after the first load, after which the app is fully offline.
+Pushes to `main` are deployed automatically by `.github/workflows/pages.yml` after the verify job passes. Pull requests run verify but don't deploy. Enable Pages once in the repo settings (Source: GitHub Actions). No build step.
+
+The service worker activates after the first load, after which the app is fully offline.
 
 ## Architecture
 
