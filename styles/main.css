@@ -3,7 +3,7 @@
   --bg-2: #141923;
   --fg: #e8ecf1;
   --muted: #8b95a7;
-  --accent: #34d399;
+  --accent: #14b8a6;
   --accent-2: #66e0a3;
   --danger: #ff6b6b;
   --border: #1f2632;
@@ -263,7 +263,7 @@ html, body {
   transition: border-color 80ms ease, transform 80ms ease;
 }
 .mode-choice:hover, .mode-choice:focus-visible {
-  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(20, 184, 166, 0.55);
   outline: none;
 }
 .mode-choice .big {
@@ -292,7 +292,7 @@ html, body {
   transition: border-color 80ms ease, transform 80ms ease;
 }
 .wizard-choice:hover, .wizard-choice:focus-visible {
-  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(20, 184, 166, 0.55);
   transform: translateY(-1px);
   outline: none;
 }
@@ -327,16 +327,20 @@ html, body {
   cursor: pointer;
   transition: background 80ms ease, border-color 80ms ease, transform 80ms ease;
 }
-/* Hover stays neutral so it doesn't compete with the active state. */
+/* Hover hints at the accent without committing to it. */
 .opt-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(20, 184, 166, 0.55);
 }
+/* Active is the only thing fully filled; bigger ring + slight scale make it
+   read as "the chosen one" even with hover on a neighbour. */
 .opt-btn.active {
   background: var(--accent);
   color: var(--bg);
   border-color: var(--accent);
   font-weight: 700;
-  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.30);
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.35);
+  transform: scale(1.04);
 }
 
 .wizard-primary {

@@ -845,7 +845,7 @@ export class RacingGame extends Scene {
     ctx.stroke(m.path);
     // Start/finish marker.
     const start = this.track.centerline[0];
-    ctx.fillStyle = '#34d399';
+    ctx.fillStyle = '#14b8a6';
     ctx.beginPath();
     ctx.arc(m.ox + start.x * m.scale, m.oy + start.y * m.scale, 2.5, 0, Math.PI * 2);
     ctx.fill();
@@ -888,7 +888,7 @@ export class RacingGame extends Scene {
     // Header.
     const px = vp.x + 24;
     let py = vp.y + 32;
-    ctx.fillStyle = '#34d399';
+    ctx.fillStyle = '#14b8a6';
     ctx.font = 'bold 18px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
