@@ -106,7 +106,7 @@ export class TrackPicker {
     const inner = document.createElementNS(svgNS, 'path');
     inner.setAttribute('d', d);
     inner.setAttribute('fill', 'none');
-    inner.setAttribute('stroke', '#ffd166');
+    inner.setAttribute('stroke', '#14b8a6');
     inner.setAttribute('stroke-width', '1.2');
     inner.setAttribute('stroke-dasharray', '3 4');
     svg.appendChild(inner);
