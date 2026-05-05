@@ -15,7 +15,7 @@ const sharedLoad = async () => {
 const solo = {
   id: 'rural-racing-solo',
   title: 'Rural Racing — Solo',
-  description: 'Top-down arcade racing through countryside bends versus three CPU drivers.',
+  description: 'Pick a circuit (Countryside, Silverstone, Spa, Miami, Monaco) and race three CPU drivers.',
   tags: ['racing'],
   players: { min: 1, max: 1 },
   controls: 'Arrows or Gamepad',
@@ -28,7 +28,7 @@ const solo = {
 const versus = {
   id: 'rural-racing-versus',
   title: 'Rural Racing — Versus (2P)',
-  description: 'Split-screen local multiplayer. Player 1 uses Arrows + Space, Player 2 uses WASD + Shift, plus any connected gamepads.',
+  description: 'Local multiplayer on a single screen. Player 1 uses Arrows + Space, Player 2 uses WASD + Shift, plus any connected gamepads. Pick a track first.',
   tags: ['racing', 'multiplayer'],
   players: { min: 2, max: 2 },
   controls: 'Arrows + WASD or 2 Gamepads',

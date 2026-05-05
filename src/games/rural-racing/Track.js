@@ -1,24 +1,49 @@
-// Track: spline-based centerline with a uniform half-width.
+// Track: spline-based centerline with a uniform half-width and a theme that
+// drives palette + decoration types.
 //
-// Construction takes a small list of control points (the "spine" of the loop)
-// and generates a dense centerline by Catmull-Rom interpolation. The centerline
-// drives both rendering (we draw a thick stroke) and gameplay (cars query the
-// track to find their nearest segment, off-track distance, lap progress, and
-// curvature ahead).
+// Themes:
+//   - countryside : green grass, trees + hay + rocks (UK farmland feel)
+//   - forest      : darker grass, dense conifers, fewer rocks (Ardennes)
+//   - urban       : asphalt-grey runoff, palm trees + grandstands (Miami)
+//   - street      : grey "concrete" surroundings, barriers tight to track (Monaco)
 //
-// Decorations (trees, hay bales) are scattered along both edges from a
-// deterministic seed so the layout is identical for everyone.
+// Decorations are scattered along both edges from a deterministic seed so the
+// scene is identical for every player.
 
 import { distToSegment } from '../../engine/utils/math.js';
 import { createRng, range } from '../../engine/utils/rng.js';
+import { closedCenterline } from '../../engine/utils/spline.js';
 
-const SUBDIVISIONS_PER_SEGMENT = 14;
-
-function catmullRom(p0, p1, p2, p3, t) {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
-}
+const THEMES = {
+  countryside: {
+    grass: '#2d5a35',
+    grassBands: 'rgba(255,255,255,0.025)',
+    decoTypes: ['tree', 'tree', 'tree', 'hay', 'rock'],
+    treePalette: ['#1f6b2a', '#2a8038'],
+    barrierTight: false
+  },
+  forest: {
+    grass: '#1a3f22',
+    grassBands: 'rgba(255,255,255,0.015)',
+    decoTypes: ['tree', 'tree', 'tree', 'tree', 'rock'],
+    treePalette: ['#0f3318', '#194a25'],
+    barrierTight: false
+  },
+  urban: {
+    grass: '#3e4044',
+    grassBands: 'rgba(255,255,255,0.02)',
+    decoTypes: ['palm', 'palm', 'grandstand', 'rock'],
+    treePalette: ['#2f7a4a', '#3a8e58'],
+    barrierTight: false
+  },
+  street: {
+    grass: '#4a4d52',
+    grassBands: 'rgba(255,255,255,0.018)',
+    decoTypes: ['barrier', 'barrier', 'palm', 'grandstand'],
+    treePalette: ['#2f7a4a'],
+    barrierTight: true
+  }
+};
 
 export class Track {
   constructor({
@@ -26,38 +51,25 @@ export class Track {
     controlPoints,
     halfWidth = 70,
     laps = 3,
+    theme = 'countryside',
     decorationDensity = 0.5,
     decorationSeed = 1
   }) {
     this.name = name;
     this.halfWidth = halfWidth;
     this.totalLaps = laps;
+    this.theme = THEMES[theme] || THEMES.countryside;
+    this.themeName = theme;
 
-    const cps = controlPoints;
-    const n = cps.length;
-    const cl = [];
-    for (let i = 0; i < n; i++) {
-      const p0 = cps[(i - 1 + n) % n];
-      const p1 = cps[i];
-      const p2 = cps[(i + 1) % n];
-      const p3 = cps[(i + 2) % n];
-      for (let s = 0; s < SUBDIVISIONS_PER_SEGMENT; s++) {
-        const t = s / SUBDIVISIONS_PER_SEGMENT;
-        cl.push({
-          x: catmullRom(p0[0], p1[0], p2[0], p3[0], t),
-          y: catmullRom(p0[1], p1[1], p2[1], p3[1], t)
-        });
-      }
-    }
-    this.centerline = cl;
+    this.centerline = closedCenterline(controlPoints, 14);
 
     // Pre-compute segment lengths and tangents.
-    this.segLen = new Array(cl.length);
-    this.segTangent = new Array(cl.length);
+    this.segLen = new Array(this.centerline.length);
+    this.segTangent = new Array(this.centerline.length);
     let total = 0;
-    for (let i = 0; i < cl.length; i++) {
-      const a = cl[i];
-      const b = cl[(i + 1) % cl.length];
+    for (let i = 0; i < this.centerline.length; i++) {
+      const a = this.centerline[i];
+      const b = this.centerline[(i + 1) % this.centerline.length];
       const dx = b.x - a.x, dy = b.y - a.y;
       const len = Math.hypot(dx, dy);
       this.segLen[i] = len;
@@ -68,7 +80,7 @@ export class Track {
 
     // Bounds, used by the camera.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of cl) {
+    for (const p of this.centerline) {
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y;
@@ -81,14 +93,11 @@ export class Track {
     const startSeg = 0;
     const t = this.segTangent[startSeg];
     this.startAngle = Math.atan2(t.y, t.x);
-    const start = cl[startSeg];
+    const start = this.centerline[startSeg];
     this.startX = start.x - t.x * 30;
     this.startY = start.y - t.y * 30;
 
-    // Cached starting grid: 8 staggered slots in two columns.
     this.startGrid = this._buildStartGrid(8);
-
-    // Decorations (deterministic).
     this.decorations = this._buildDecorations(decorationDensity, decorationSeed);
   }
 
@@ -115,9 +124,9 @@ export class Track {
     const rng = createRng(seed);
     const out = [];
     const cl = this.centerline;
-    // Step along the centerline at fixed cadence; density is the per-side
-    // placement probability, not the spacing.
-    const step = 4;
+    const decoTypes = this.theme.decoTypes;
+    // Step at a fixed cadence; density controls per-side placement probability.
+    const step = this.theme.barrierTight ? 3 : 4;
     for (let i = 0; i < cl.length; i += step) {
       const a = cl[i];
       const t = this.segTangent[i];
@@ -125,25 +134,61 @@ export class Track {
       if (i < 4 || i > cl.length - 4) continue;
       for (const side of [-1, 1]) {
         if (rng() > density) continue;
-        const dist = this.halfWidth + 18 + range(rng, 0, 60);
-        const jitterAlong = range(rng, -10, 10);
-        const px = a.x + t.x * jitterAlong + (-t.y) * side * dist;
-        const py = a.y + t.y * jitterAlong + (t.x) * side * dist;
-        // Choose decoration type.
-        const r = rng();
-        if (r < 0.78) {
-          out.push({ type: 'tree', x: px, y: py, r: 9 + range(rng, 0, 5), shade: range(rng, 0.85, 1.15) });
-        } else if (r < 0.92) {
-          out.push({ type: 'hay', x: px, y: py, w: 18, h: 12, angle: range(rng, -0.3, 0.3) });
-        } else {
-          out.push({ type: 'rock', x: px, y: py, r: 6 + range(rng, 0, 4) });
-        }
+        // Street circuits: barriers right against the track. Others: pulled out.
+        const baseOffset = this.theme.barrierTight
+          ? this.halfWidth + 6
+          : this.halfWidth + 18 + range(rng, 0, 60);
+        const jitterAlong = range(rng, -8, 8);
+        const px = a.x + t.x * jitterAlong + (-t.y) * side * baseOffset;
+        const py = a.y + t.y * jitterAlong + (t.x) * side * baseOffset;
+        const type = decoTypes[Math.floor(rng() * decoTypes.length)];
+        out.push(this._makeDecoration(type, px, py, t, rng));
       }
     }
     return out;
   }
 
-  // Find the nearest segment to (x, y), starting search around `aroundIdx`.
+  _makeDecoration(type, x, y, tan, rng) {
+    if (type === 'tree') {
+      const palette = this.theme.treePalette;
+      return {
+        type: 'tree',
+        x, y,
+        r: 9 + range(rng, 0, 5),
+        color: palette[Math.floor(rng() * palette.length)]
+      };
+    }
+    if (type === 'hay') {
+      return { type: 'hay', x, y, w: 18, h: 12, angle: range(rng, -0.3, 0.3) };
+    }
+    if (type === 'rock') {
+      return { type: 'rock', x, y, r: 6 + range(rng, 0, 4) };
+    }
+    if (type === 'palm') {
+      return { type: 'palm', x, y, r: 7 + range(rng, 0, 3) };
+    }
+    if (type === 'grandstand') {
+      // Long thin block oriented along the local tangent, jittered position.
+      return {
+        type: 'grandstand',
+        x, y,
+        angle: Math.atan2(tan.y, tan.x),
+        w: 60 + range(rng, 0, 30),
+        h: 14
+      };
+    }
+    if (type === 'barrier') {
+      return {
+        type: 'barrier',
+        x, y,
+        angle: Math.atan2(tan.y, tan.x),
+        w: 18,
+        h: 5
+      };
+    }
+    return { type: 'rock', x, y, r: 6 };
+  }
+
   project(x, y, aroundIdx = 0, window = 24) {
     const cl = this.centerline;
     const n = cl.length;
@@ -166,9 +211,6 @@ export class Track {
     return { segIndex: bestI, t: bestT, distance: bestD };
   }
 
-  // Returns the point `lookahead` units forward of (segIndex, t).
-  // If `lateralOffset` is set, the point is shifted by that many units
-  // perpendicular to the local tangent (positive = right of travel).
   lookAhead(segIndex, t, distance, lateralOffset = 0) {
     let i = segIndex;
     let remain = distance + this.segLen[i] * (1 - t);
@@ -193,8 +235,6 @@ export class Track {
     };
   }
 
-  // Estimate curvature ahead — magnitude of tangent change in the next `count`
-  // segments. Used by AI to slow into corners.
   curvatureAhead(segIndex, count = 6) {
     const n = this.segTangent.length;
     let acc = 0;
@@ -210,66 +250,60 @@ export class Track {
   draw(renderer) {
     const ctx = renderer.ctx;
     const cl = this.centerline;
+    const theme = this.theme;
 
-    // Grass background — large rect tied to bounds.
-    ctx.fillStyle = '#2d5a35';
+    // Grass background.
+    ctx.fillStyle = theme.grass;
     ctx.fillRect(this.bounds.minX, this.bounds.minY,
       this.bounds.maxX - this.bounds.minX,
       this.bounds.maxY - this.bounds.minY);
 
-    // Soft grass texture: a few tonal bands.
-    ctx.fillStyle = 'rgba(255,255,255,0.025)';
+    // Grass tonal bands.
+    ctx.fillStyle = theme.grassBands;
     for (let yy = this.bounds.minY; yy < this.bounds.maxY; yy += 26) {
       ctx.fillRect(this.bounds.minX, yy, this.bounds.maxX - this.bounds.minX, 4);
     }
 
-    // Curb (red/white, slightly wider than the asphalt).
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = this.halfWidth * 2 + 8;
-    ctx.strokeStyle = '#c83b3b';
-    ctx.beginPath();
-    ctx.moveTo(cl[0].x, cl[0].y);
-    for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
-    ctx.closePath();
-    ctx.stroke();
 
-    // White curb stripe (overlaid dashed on top of red).
-    ctx.lineWidth = this.halfWidth * 2 + 6;
-    ctx.strokeStyle = '#ffffff';
-    ctx.setLineDash([16, 16]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    if (!this.theme.barrierTight) {
+      // Curb (red/white, slightly wider than the asphalt).
+      ctx.lineWidth = this.halfWidth * 2 + 8;
+      ctx.strokeStyle = '#c83b3b';
+      this._strokeLoop(ctx, cl);
+
+      ctx.lineWidth = this.halfWidth * 2 + 6;
+      ctx.strokeStyle = '#ffffff';
+      ctx.setLineDash([16, 16]);
+      this._strokeLoop(ctx, cl);
+      ctx.setLineDash([]);
+    } else {
+      // Street circuits: a narrow concrete shoulder, no kerb stripes.
+      ctx.lineWidth = this.halfWidth * 2 + 5;
+      ctx.strokeStyle = '#bdbfc3';
+      this._strokeLoop(ctx, cl);
+    }
 
     // Asphalt.
     ctx.lineWidth = this.halfWidth * 2;
     ctx.strokeStyle = '#3a3f48';
-    ctx.beginPath();
-    ctx.moveTo(cl[0].x, cl[0].y);
-    for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
-    ctx.closePath();
-    ctx.stroke();
+    this._strokeLoop(ctx, cl);
 
-    // Inner shading.
     ctx.lineWidth = this.halfWidth * 2 - 4;
     ctx.strokeStyle = '#454a55';
-    ctx.stroke();
+    this._strokeLoop(ctx, cl);
 
     // Centerline dashes.
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(255, 220, 90, 0.55)';
     ctx.setLineDash([16, 22]);
-    ctx.beginPath();
-    ctx.moveTo(cl[0].x, cl[0].y);
-    for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
-    ctx.closePath();
-    ctx.stroke();
+    this._strokeLoop(ctx, cl);
     ctx.setLineDash([]);
 
-    // Decorations (drawn before the start line so the line is on top).
     for (const d of this.decorations) this._drawDecoration(ctx, d);
 
-    // Start/finish line: a thick checkered band perpendicular to seg 0 tangent.
+    // Start/finish line.
     const t = this.segTangent[0];
     const a = this.centerline[0];
     ctx.save();
@@ -286,24 +320,75 @@ export class Track {
     ctx.restore();
   }
 
+  _strokeLoop(ctx, cl) {
+    ctx.beginPath();
+    ctx.moveTo(cl[0].x, cl[0].y);
+    for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+
   _drawDecoration(ctx, d) {
     if (d.type === 'tree') {
-      // Shadow
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
       ctx.beginPath();
       ctx.ellipse(d.x + 2, d.y + 3, d.r * 1.05, d.r * 0.55, 0, 0, Math.PI * 2);
       ctx.fill();
-      // Foliage
-      const g = '#1f6b2a';
-      ctx.fillStyle = d.shade > 1 ? '#2a8038' : g;
+      ctx.fillStyle = d.color;
       ctx.beginPath();
       ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
       ctx.fill();
-      // Highlight
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
       ctx.beginPath();
       ctx.arc(d.x - d.r * 0.35, d.y - d.r * 0.35, d.r * 0.45, 0, Math.PI * 2);
       ctx.fill();
+    } else if (d.type === 'palm') {
+      // Trunk
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(d.x + 2, d.y + 3, d.r * 0.9, d.r * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7a5a3a';
+      ctx.fillRect(d.x - 2, d.y - 1, 4, 6);
+      // Fronds
+      ctx.fillStyle = '#2f8a4a';
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2;
+        const ex = d.x + Math.cos(a) * d.r;
+        const ey = d.y + Math.sin(a) * d.r * 0.7;
+        ctx.beginPath();
+        ctx.ellipse(ex, ey, d.r * 0.55, d.r * 0.18, a, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#56b078';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.type === 'grandstand') {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.angle);
+      // Shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(-d.w / 2 + 2, -d.h / 2 + 2, d.w, d.h);
+      // Body (white roof)
+      ctx.fillStyle = '#dadde2';
+      ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+      // Stripes (seating rows)
+      ctx.fillStyle = '#9aa1ad';
+      for (let i = 0; i < 4; i++) {
+        ctx.fillRect(-d.w / 2 + 2, -d.h / 2 + 2 + i * (d.h - 4) / 4, d.w - 4, 1);
+      }
+      ctx.restore();
+    } else if (d.type === 'barrier') {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.angle);
+      ctx.fillStyle = '#e6e6e6';
+      ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+      ctx.fillStyle = '#c83b3b';
+      ctx.fillRect(-d.w / 2, -d.h / 2, d.w * 0.5, d.h);
+      ctx.restore();
     } else if (d.type === 'hay') {
       ctx.save();
       ctx.translate(d.x, d.y);

@@ -11,7 +11,8 @@ import { Track } from './Track.js';
 import { Vehicle } from './Vehicle.js';
 import { AIDriver } from './AIDriver.js';
 import { HUD } from './HUD.js';
-import countryside from './tracks/countryside.js';
+import { TrackPicker } from './TrackPicker.js';
+import { findTrackById, TRACKS } from './tracks/index.js';
 import { resolveCircles } from '../../engine/physics/Collision.js';
 
 const VEHICLE_COLORS = ['#ffcc33', '#66e0a3', '#ff6b6b', '#7aa9ff', '#c98bff', '#ffa15a'];
@@ -55,16 +56,33 @@ const AI_PERSONALITIES = [
 ];
 
 export class RacingGame extends Scene {
-  constructor({ humans = 1, aiCount = 3, track = countryside, useSplit = false } = {}) {
+  constructor({ humans = 1, aiCount = 3, trackId = null, useSplit = false } = {}) {
     super();
     this.humansRequested = Math.max(1, Math.min(2, humans));
     this.aiCount = aiCount;
-    this.trackData = track;
+    this.trackId = trackId;     // null = show picker on init
     this.useSplit = useSplit;
   }
 
   async init() {
     const ctx = this.ctx;
+
+    // Track selection: explicit id wins, otherwise show the picker.
+    let trackData;
+    if (this.trackId) {
+      trackData = findTrackById(this.trackId);
+    } else {
+      const picker = new TrackPicker(ctx.overlayRoot);
+      const chosenId = await picker.show();
+      if (!chosenId) {
+        // Esc cancelled the picker — return to launcher.
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+        return;
+      }
+      trackData = findTrackById(chosenId);
+      this.trackId = trackData.id;
+    }
+    this.trackData = trackData;
     this.track = new Track(this.trackData);
     this.vehicles = [];
     this.humanPlayers = [];
@@ -144,16 +162,32 @@ export class RacingGame extends Scene {
   }
 
   destroy() {
-    for (const s of this.engineSounds) s.stop?.();
-    this.engineSounds = [];
+    if (this.engineSounds) {
+      for (const s of this.engineSounds) s.stop?.();
+      this.engineSounds = [];
+    }
     if (this.hud) this.hud.destroy();
     if (this.ctx?.overlayRoot) {
       this.ctx.overlayRoot.replaceChildren();
       this.ctx.overlayRoot.hidden = true;
     }
-    if (this.ctx?.input) {
+    if (this.ctx?.input && this.humanPlayers) {
       for (const p of this.humanPlayers) this.ctx.input.removePlayer(p);
     }
+  }
+
+  // The render loop can fire before init's await chain finishes (picker open).
+  // Guard the methods that depend on a built track.
+  update(dt) {
+    if (!this.track) return;
+    return this._update(dt);
+  }
+  render(renderer) {
+    if (!this.track) {
+      renderer.clear('#0c0f14');
+      return;
+    }
+    return this._render(renderer);
   }
 
   _refitCamera() {
@@ -163,7 +197,7 @@ export class RacingGame extends Scene {
   }
 
   // --- Update loop ---
-  update(dt) {
+  _update(dt) {
     if (this.paused) return;
     // Re-fit camera if the canvas has resized since last frame.
     this._refitCamera();
@@ -283,7 +317,7 @@ export class RacingGame extends Scene {
   }
 
   // --- Render ---
-  render(renderer) {
+  _render(renderer) {
     renderer.clear('#1a1f1a');
     if (!this.useSplit) {
       this._renderShared(renderer);
