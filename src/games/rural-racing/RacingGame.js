@@ -59,7 +59,8 @@ function aiColors(usedHexes) {
 export class RacingGame extends Scene {
   constructor(opts = {}) {
     super();
-    this.mode = opts.mode || 'race';
+    // mode is null on first launch — the player picks one in-game.
+    this.mode = opts.mode || null;
     this.preset = opts.config || null;       // skip wizard if supplied
     this.config = null;
     this.championship = opts.championship || null;
@@ -68,6 +69,16 @@ export class RacingGame extends Scene {
   async init() {
     const ctx = this.ctx;
     ctx.canvas.focus({ preventScroll: true });
+
+    // Step 0: pick a mode if not preset.
+    if (!this.mode) {
+      const chosen = await this._pickMode();
+      if (!chosen) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+        return;
+      }
+      this.mode = chosen;
+    }
 
     if (!this.config) {
       this.config = await this._setupForMode();
@@ -222,6 +233,56 @@ export class RacingGame extends Scene {
     if (this.mode === 'timetrial') return this._timeTrialSetup();
     if (this.mode === 'career') return this._careerSetup();
     return null;
+  }
+
+  // First step shown after the player launches Rural Racing — choose
+  // between Quick Race, Time Trial and Career. Resolves with the mode id
+  // or null on Esc.
+  _pickMode() {
+    return new Promise((resolve) => {
+      const root = this.ctx.overlayRoot;
+      root.hidden = false;
+      root.replaceChildren();
+      const card = document.createElement('div');
+      card.className = 'overlay-card wizard-card';
+      const modes = [
+        { id: 'race',      title: 'Quick Race',  blurb: '1-4 players + AI. Tune difficulty, weather, time of day, lap count. Restart with R / N.' },
+        { id: 'timetrial', title: 'Time Trial',  blurb: 'Solo hot-laps. Sectors + persistent personal best + ghost car of your fastest lap.' },
+        { id: 'career',    title: 'Career',      blurb: '9-race championship across every circuit. F1 points scoring; standings persist across sessions.' }
+      ];
+      const h = document.createElement('h2');
+      h.textContent = 'Choose mode';
+      const p = document.createElement('p');
+      p.textContent = 'Pick how you want to race. Esc returns to the launcher.';
+      card.append(h, p);
+      const list = document.createElement('div');
+      list.className = 'mode-choices';
+      let resolved = false;
+      const cleanup = () => {
+        resolved = true;
+        window.removeEventListener('keydown', onEsc);
+        root.replaceChildren();
+        root.hidden = true;
+      };
+      const onEsc = (e) => { if (e.code === 'Escape' && !resolved) { cleanup(); resolve(null); } };
+      window.addEventListener('keydown', onEsc);
+
+      for (const m of modes) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mode-choice';
+        const title = document.createElement('span');
+        title.className = 'big';
+        title.textContent = m.title;
+        const blurb = document.createElement('span');
+        blurb.textContent = m.blurb;
+        btn.append(title, blurb);
+        btn.addEventListener('click', () => { cleanup(); resolve(m.id); });
+        list.appendChild(btn);
+      }
+      card.appendChild(list);
+      root.appendChild(card);
+    });
   }
 
   async _timeTrialSetup() {
