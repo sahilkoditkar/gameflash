@@ -1,89 +1,69 @@
 // RacingGame: the Scene. Wires track, vehicles, players, AI, HUD, and
-// race/lap state.
+// race/lap state. On launch it runs a multi-step pre-race wizard that
+// resolves to a complete config (player count, track, options, players).
 //
-// The track is small enough to fit a single window, so we render it with a
-// single fit-to-bounds camera even when 2 humans are playing — both cars are
-// always on screen. The split-screen render path is preserved on `useSplit`
-// for tracks that may need it later.
+// On restart (R after race finish) the same config is reused — the wizard
+// only runs the first time per launch.
 
 import { Scene } from '../../engine/Scene.js';
 import { Track } from './Track.js';
 import { Vehicle } from './Vehicle.js';
 import { AIDriver } from './AIDriver.js';
 import { HUD } from './HUD.js';
-import { TrackPicker } from './TrackPicker.js';
-import { findTrackById, TRACKS } from './tracks/index.js';
 import { resolveCircles } from '../../engine/physics/Collision.js';
+import {
+  RaceWizard, COLORS, DIFFICULTY, WEATHER, TIME_OF_DAY,
+  bindingForDevice, applyLapsOverride, trackById
+} from './Wizard.js';
 
-const VEHICLE_COLORS = ['#ffcc33', '#66e0a3', '#ff6b6b', '#7aa9ff', '#c98bff', '#ffa15a'];
+const AI_NAMES = ['Reiner', 'Marlow', 'Pippa', 'Oso', 'Verity', 'Ash', 'Zeb', 'Cleo'];
+const AI_LINE_OFFSETS = [0, -22, 24, -10, 14, -18, 20, -8];
 
-const KB_LAYOUT_P1 = {
-  axes: { steer: ['ArrowLeft', 'ArrowRight'] },
-  actions: {
-    accelerate: ['ArrowUp'],
-    brake: ['ArrowDown'],
-    handbrake: ['Space'],
-    pause: ['KeyP']
-  }
-};
-const KB_LAYOUT_P2 = {
-  axes: { steer: ['KeyA', 'KeyD'] },
-  actions: {
-    accelerate: ['KeyW'],
-    brake: ['KeyS'],
-    handbrake: ['ShiftLeft']
-  }
-};
-const PAD_LAYOUT = {
-  gamepadAxes: { steer: { axis: 0 } },
-  gamepadActions: {
-    accelerate: ['rt', 'a'],
-    brake: ['lt', 'b'],
-    handbrake: ['x'],
-    pause: ['start']
-  }
-};
-
-// Per-AI personality presets. Each entry produces a clearly different driver:
-// preferred line offset (right-of-travel), skill, cornering caution, and base
-// lookahead distance. The first AI is the cleanest racer; the rest deviate.
-const AI_PERSONALITIES = [
-  { name: 'Reiner',  skill: 0.78, lineOffset:  0,   cornerCaution: 0.45, lookahead: 80 },
-  { name: 'Marlow',  skill: 0.66, lineOffset: -22,  cornerCaution: 0.55, lookahead: 86 },
-  { name: 'Pippa',   skill: 0.72, lineOffset:  24,  cornerCaution: 0.40, lookahead: 78 },
-  { name: 'Oso',     skill: 0.60, lineOffset: -10,  cornerCaution: 0.65, lookahead: 92 },
-  { name: 'Verity',  skill: 0.74, lineOffset:  14,  cornerCaution: 0.50, lookahead: 84 }
-];
+// Reserve colours that humans claim so AI doesn't accidentally double up.
+function aiColors(usedHexes) {
+  return COLORS.map((c) => c.hex).filter((h) => !usedHexes.has(h));
+}
 
 export class RacingGame extends Scene {
-  constructor({ humans = 1, aiCount = 3, trackId = null, useSplit = false } = {}) {
+  constructor(opts = {}) {
     super();
-    this.humansRequested = Math.max(1, Math.min(2, humans));
-    this.aiCount = aiCount;
-    this.trackId = trackId;     // null = show picker on init
-    this.useSplit = useSplit;
+    // `config` lets a caller skip the wizard (used internally by restart).
+    this.preset = opts.config || null;
+    this.config = null;
   }
 
   async init() {
     const ctx = this.ctx;
 
-    // Track selection: explicit id wins, otherwise show the picker.
-    let trackData;
-    if (this.trackId) {
-      trackData = findTrackById(this.trackId);
-    } else {
-      const picker = new TrackPicker(ctx.overlayRoot);
-      const chosenId = await picker.show();
-      if (!chosenId) {
-        // Esc cancelled the picker — return to launcher.
-        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
-        return;
+    // Ensure the canvas focus is back on so the wizard's keydown listeners
+    // receive Escape via window.
+    ctx.canvas.focus({ preventScroll: true });
+
+    if (!this.config) {
+      if (this.preset) {
+        this.config = this.preset;
+      } else {
+        const wizard = new RaceWizard(ctx);
+        this.config = await wizard.run();
+        if (!this.config) {
+          // Cancelled at any step — bail out to launcher.
+          window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+          return;
+        }
       }
-      trackData = findTrackById(chosenId);
-      this.trackId = trackData.id;
     }
+
+    const cfg = this.config;
+    const trackData = trackById(cfg.trackId);
     this.trackData = trackData;
-    this.track = new Track(this.trackData);
+    this.track = new Track(trackData);
+    applyLapsOverride(this.track, cfg.options.laps);
+
+    const weather = WEATHER[cfg.options.weather] || WEATHER.clear;
+    const timeDef = TIME_OF_DAY[cfg.options.time] || TIME_OF_DAY.day;
+    this.weather = weather;
+    this.timeDef = timeDef;
+
     this.vehicles = [];
     this.humanPlayers = [];
     this.aiDrivers = [];
@@ -91,53 +71,52 @@ export class RacingGame extends Scene {
     this.state = 'countdown';
     this.countdown = 3.999;
     this.elapsed = 0;
+    this.paused = false;
 
-    // Build player input bindings.
-    const p1 = ctx.input.createPlayer({
-      keyboard: KB_LAYOUT_P1,
-      gamepad: 'auto',
-      ...PAD_LAYOUT
-    });
-    this.humanPlayers.push(p1);
-    if (this.humansRequested >= 2) {
-      const p2 = ctx.input.createPlayer({
-        keyboard: KB_LAYOUT_P2,
-        gamepad: 'auto',
-        ...PAD_LAYOUT
-      });
-      this.humanPlayers.push(p2);
-    }
-
-    // Spawn vehicles on the starting grid: humans first, then AI.
+    // Build players from chosen devices/colours.
+    const usedHexes = new Set();
     const grid = this.track.startGrid;
     let slot = 0;
-    for (let i = 0; i < this.humanPlayers.length; i++) {
+
+    for (let i = 0; i < cfg.players.length; i++) {
+      const pdef = cfg.players[i];
+      const binding = bindingForDevice(pdef.device);
+      const player = ctx.input.createPlayer(binding);
+      this.humanPlayers.push(player);
+
       const g = grid[slot++];
-      this.vehicles.push(new Vehicle({
-        x: g.x, y: g.y, angle: g.angle,
-        color: VEHICLE_COLORS[i % VEHICLE_COLORS.length],
-        name: `P${i + 1}`,
-        isHuman: true
-      }));
-    }
-    for (let i = 0; i < this.aiCount; i++) {
-      const g = grid[slot++ % grid.length];
-      const personality = AI_PERSONALITIES[i % AI_PERSONALITIES.length];
-      const color = VEHICLE_COLORS[(this.humanPlayers.length + i) % VEHICLE_COLORS.length];
       const v = new Vehicle({
         x: g.x, y: g.y, angle: g.angle,
-        color,
-        name: personality.name,
-        isHuman: false
+        color: pdef.color.hex,
+        name: `P${i + 1}`,
+        isHuman: true,
+        gripMul: weather.gripMul
+      });
+      this.vehicles.push(v);
+      usedHexes.add(pdef.color.hex);
+    }
+
+    // AI drivers: count + skill scale come from difficulty.
+    const diff = DIFFICULTY[cfg.options.difficulty] || DIFFICULTY.normal;
+    const aiPalette = aiColors(usedHexes);
+    for (let i = 0; i < diff.aiCount; i++) {
+      const g = grid[slot++ % grid.length];
+      const skill = diff.skillBase + (i / Math.max(1, diff.aiCount - 1)) * diff.skillSpread;
+      const v = new Vehicle({
+        x: g.x, y: g.y, angle: g.angle,
+        color: aiPalette[i % aiPalette.length],
+        name: AI_NAMES[i % AI_NAMES.length],
+        isHuman: false,
+        gripMul: weather.gripMul
       });
       this.vehicles.push(v);
       this.aiDrivers.push(new AIDriver({
         vehicle: v,
         track: this.track,
-        skill: personality.skill,
-        lineOffset: personality.lineOffset,
-        lookahead: personality.lookahead,
-        cornerCaution: personality.cornerCaution
+        skill,
+        lineOffset: AI_LINE_OFFSETS[i % AI_LINE_OFFSETS.length],
+        lookahead: 80 + i * 4,
+        cornerCaution: 0.45 + (1 - skill) * 0.4
       }));
     }
 
@@ -157,7 +136,6 @@ export class RacingGame extends Scene {
       this.hud.ensure('p2', { position: { top: '12px', right: '12px' } });
     }
 
-    this.paused = false;
     this._renderCountdownOverlay();
   }
 
@@ -176,17 +154,11 @@ export class RacingGame extends Scene {
     }
   }
 
-  // The render loop can fire before init's await chain finishes (picker open).
-  // Guard the methods that depend on a built track.
-  update(dt) {
-    if (!this.track) return;
-    return this._update(dt);
-  }
+  // The render loop can fire while init's await chain is still running
+  // (wizard open). Guard the methods that depend on a built track.
+  update(dt) { if (this.track) return this._update(dt); }
   render(renderer) {
-    if (!this.track) {
-      renderer.clear('#0c0f14');
-      return;
-    }
+    if (!this.track) { renderer.clear('#0c0f14'); return; }
     return this._render(renderer);
   }
 
@@ -199,7 +171,6 @@ export class RacingGame extends Scene {
   // --- Update loop ---
   _update(dt) {
     if (this.paused) return;
-    // Re-fit camera if the canvas has resized since last frame.
     this._refitCamera();
 
     if (this.state === 'countdown') {
@@ -319,48 +290,36 @@ export class RacingGame extends Scene {
   // --- Render ---
   _render(renderer) {
     renderer.clear('#1a1f1a');
-    if (!this.useSplit) {
-      this._renderShared(renderer);
-    } else {
-      // Split-screen path is preserved for future tracks that don't fit one
-      // viewport; not used while the active track fits the screen.
-      const half = renderer.width / 2;
-      this._renderViewport(renderer, this.vehicles[0], 0, 0, half, renderer.height);
-      this._renderViewport(renderer, this.vehicles[1] || this.vehicles[0],
-        half, 0, renderer.width - half, renderer.height);
-      renderer.pushScreen();
-      renderer.ctx.fillStyle = '#0c0f14';
-      renderer.ctx.fillRect(half - 1, 0, 2, renderer.height);
-      renderer.popScreen();
-    }
-  }
-
-  _renderShared(renderer) {
     renderer.pushWorld();
     this.track.draw(renderer);
     for (const v of this.vehicles) v.draw(renderer.ctx);
     renderer.popWorld();
-  }
 
-  _renderViewport(renderer, follow, x, y, w, h) {
-    const c = renderer.ctx;
-    const cam = renderer.camera;
-    cam.setViewport(w, h);
-    cam.follow(follow.body.x, follow.body.y);
+    // Time of day tint (full screen, dimmer).
+    if (this.timeDef?.tint) {
+      renderer.pushScreen();
+      renderer.ctx.fillStyle = this.timeDef.tint;
+      renderer.ctx.fillRect(0, 0, renderer.width, renderer.height);
+      renderer.popScreen();
+    }
 
-    c.save();
-    c.beginPath();
-    c.rect(x, y, w, h);
-    c.clip();
-    c.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
-    c.translate(x + w / 2, y + h / 2);
-    c.scale(cam.zoom, cam.zoom);
-    c.translate(-cam.x, -cam.y);
-
-    this.track.draw(renderer);
-    for (const v of this.vehicles) v.draw(c);
-
-    c.restore();
+    // Rain overlay (simple animated streaks).
+    if (this.config?.options.weather === 'rain') {
+      renderer.pushScreen();
+      const c = renderer.ctx;
+      c.strokeStyle = 'rgba(180, 210, 240, 0.35)';
+      c.lineWidth = 1;
+      const t = this.elapsed * 1000;
+      for (let i = 0; i < 90; i++) {
+        const x = ((i * 137 + t * 0.6) % (renderer.width + 80)) - 40;
+        const y = ((i * 91  + t * 0.9) % (renderer.height + 60)) - 30;
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(x - 6, y + 14);
+        c.stroke();
+      }
+      renderer.popScreen();
+    }
   }
 
   // --- Overlays ---
@@ -407,20 +366,24 @@ export class RacingGame extends Scene {
       <table style="margin: 0 auto 14px; border-collapse: collapse; font-family: ui-monospace, monospace;">
         ${rows}
       </table>
-      <p>Press <strong>R</strong> to race again, <strong>Esc</strong> for menu.</p>
+      <p>Press <strong>R</strong> to race the same setup, <strong>N</strong> for new race options, <strong>Esc</strong> for menu.</p>
     `;
     root.appendChild(card);
     const onKey = (e) => {
       if (e.code === 'KeyR') {
         window.removeEventListener('keydown', onKey);
-        this._restart();
+        this._restart(true);
+      } else if (e.code === 'KeyN') {
+        window.removeEventListener('keydown', onKey);
+        this._restart(false);
       }
     };
     window.addEventListener('keydown', onKey);
   }
 
-  _restart() {
+  async _restart(reuseConfig) {
     this.destroy();
+    if (!reuseConfig) this.config = null;
     return this.init();
   }
 

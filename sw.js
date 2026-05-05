@@ -5,7 +5,7 @@
 //   - Network-only for non-GET and cross-origin requests.
 // The cache name is versioned; bumping the version invalidates the old shell.
 
-const CACHE_VERSION = 'gameflash-v4';
+const CACHE_VERSION = 'gameflash-v5';
 const SHELL_PATHS = [
   './',
   './index.html',
@@ -37,6 +37,7 @@ const SHELL_PATHS = [
   './src/games/rural-racing/Track.js',
   './src/games/rural-racing/AIDriver.js',
   './src/games/rural-racing/HUD.js',
+  './src/games/rural-racing/Wizard.js',
   './src/games/rural-racing/TrackPicker.js',
   './src/games/rural-racing/tracks/index.js',
   './src/games/rural-racing/tracks/countryside.js',
