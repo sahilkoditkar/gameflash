@@ -13,6 +13,7 @@ import { AIDriver } from './AIDriver.js';
 import { HUD } from './HUD.js';
 import { SkidLayer } from './SkidLayer.js';
 import { Haptics } from './Haptics.js';
+import { Camera } from '../../engine/render/Camera.js';
 import { resolveCircles } from '../../engine/physics/Collision.js';
 import {
   RaceWizard, COLORS, DIFFICULTY, WEATHER, TIME_OF_DAY,
@@ -25,6 +26,31 @@ import { Championship, AI_DRIVER_NAMES } from './Championship.js';
 const AI_LINE_OFFSETS = [0, -22, 24, -10, 14, -18, 20, -8];
 const SKID_LATERAL_THRESHOLD = 70;       // |lateral speed| above this leaves marks
 const COLLISION_RUMBLE_THRESHOLD = 80;   // relative velocity for a strong rumble
+const FOLLOW_ZOOM = 1.4;                 // per-player follow camera zoom
+
+// 1-4 player split-screen layout. Returns viewport rectangles (CSS-pixel
+// coordinates) inside the canvas. 1=full, 2=L|R, 3=top L|R + bottom-left,
+// 4=2x2.
+function viewportLayout(playerCount, w, h) {
+  if (playerCount <= 1) return [{ x: 0, y: 0, w, h }];
+  const halfW = w / 2;
+  const halfH = h / 2;
+  if (playerCount === 2) return [
+    { x: 0,     y: 0, w: halfW, h },
+    { x: halfW, y: 0, w: halfW, h }
+  ];
+  if (playerCount === 3) return [
+    { x: 0,     y: 0,     w: halfW, h: halfH },
+    { x: halfW, y: 0,     w: halfW, h: halfH },
+    { x: 0,     y: halfH, w: halfW, h: halfH }
+  ];
+  return [
+    { x: 0,     y: 0,     w: halfW, h: halfH },
+    { x: halfW, y: 0,     w: halfW, h: halfH },
+    { x: 0,     y: halfH, w: halfW, h: halfH },
+    { x: halfW, y: halfH, w: halfW, h: halfH }
+  ];
+}
 
 function aiColors(usedHexes) {
   return COLORS.map((c) => c.hex).filter((h) => !usedHexes.has(h));
@@ -140,15 +166,45 @@ export class RacingGame extends Scene {
 
     for (const _ of this.humanPlayers) this.engineSounds.push(ctx.audio.engineLoop());
 
-    ctx.renderer.camera.setBounds(this.track.bounds);
-    this._refitCamera();
+    // One follow camera per human player. Each is bounded by the track and
+    // snaps to the player's start position on the first frame.
+    this._playerCameras = [];
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      const cam = new Camera();
+      cam.setZoom(FOLLOW_ZOOM);
+      cam.setBounds(this.track.bounds);
+      cam.smoothness = 0.22;
+      cam.snapTo(this.vehicles[i].body.x, this.vehicles[i].body.y);
+      this._playerCameras.push(cam);
+    }
 
     this.hud = new HUD(ctx.hudRoot);
-    this.hud.ensure('p1', { position: { top: '12px', right: '12px' } });
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      this.hud.ensure(`p${i + 1}`);
+    }
+    this._lastViewportSig = '';
+    this._positionHuds();
     if (this.mode === 'timetrial') this._buildTtHud();
     if (this.mode === 'career') this._buildCareerHud();
 
     this._renderCountdownOverlay();
+  }
+
+  _positionHuds() {
+    const w = this.ctx.renderer.width;
+    const h = this.ctx.renderer.height;
+    const sig = `${this.humanPlayers.length}|${w}|${h}`;
+    if (sig === this._lastViewportSig) return;
+    this._lastViewportSig = sig;
+    const layout = viewportLayout(this.humanPlayers.length, w, h);
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      const vp = layout[i];
+      // Position relative to the canvas (HUD root sits over the canvas).
+      this.hud.setPosition(`p${i + 1}`, {
+        top: `${vp.y + 12}px`,
+        left: `${vp.x + 12}px`
+      });
+    }
   }
 
   // ---------- mode-specific setup ----------
@@ -277,16 +333,10 @@ export class RacingGame extends Scene {
     return this._render(renderer);
   }
 
-  _refitCamera() {
-    const cam = this.ctx.renderer.camera;
-    cam.setViewport(this.ctx.renderer.width, this.ctx.renderer.height);
-    cam.fitToBounds(this.track.bounds, 0);
-  }
-
   // --- Update loop ---
   _update(dt) {
     if (this.paused) return;
-    this._refitCamera();
+    this._positionHuds();
 
     if (this.state === 'countdown') {
       this.countdown -= dt;
@@ -576,37 +626,84 @@ export class RacingGame extends Scene {
   // --- Render ---
   _render(renderer) {
     renderer.clear('#1a1f1a');
-    renderer.pushWorld();
-    this.track.draw(renderer);
-    this.skids.draw(renderer.ctx);
-    this._renderGhost(renderer);
-    for (const v of this.vehicles) v.draw(renderer.ctx);
-    renderer.popWorld();
+    const layout = viewportLayout(this.humanPlayers.length, renderer.width, renderer.height);
+    for (let i = 0; i < layout.length; i++) {
+      this._renderViewport(renderer, layout[i], i);
+    }
+    if (this.humanPlayers.length >= 2) this._drawSplitDividers(renderer, layout);
+    if (this.mode === 'timetrial') this._renderTtHud();
+  }
 
+  _renderViewport(renderer, vp, playerIdx) {
+    const ctx = renderer.ctx;
+    const cam = this._playerCameras[playerIdx];
+    cam.setViewport(vp.w, vp.h);
+    cam.follow(this.vehicles[playerIdx].body.x, this.vehicles[playerIdx].body.y);
+
+    // Clip to viewport, apply camera transform, draw the world.
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+    ctx.beginPath();
+    ctx.rect(vp.x, vp.y, vp.w, vp.h);
+    ctx.clip();
+    ctx.translate(vp.x + vp.w / 2, vp.y + vp.h / 2);
+    ctx.scale(cam.zoom, cam.zoom);
+    ctx.translate(-cam.x, -cam.y);
+
+    this.track.draw(renderer);
+    this.skids.draw(ctx);
+    this._renderGhost(renderer);
+    for (const v of this.vehicles) v.draw(ctx);
+
+    ctx.restore();
+
+    // Per-viewport screen-space overlays.
+    this._renderScreenEffects(renderer, vp);
+  }
+
+  _renderScreenEffects(renderer, vp) {
+    const ctx = renderer.ctx;
     if (this.timeDef?.tint) {
-      renderer.pushScreen();
-      renderer.ctx.fillStyle = this.timeDef.tint;
-      renderer.ctx.fillRect(0, 0, renderer.width, renderer.height);
-      renderer.popScreen();
+      ctx.save();
+      ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+      ctx.fillStyle = this.timeDef.tint;
+      ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
+      ctx.restore();
     }
     if (this.config?.options.weather === 'rain') {
-      renderer.pushScreen();
-      const c = renderer.ctx;
-      c.strokeStyle = 'rgba(180, 210, 240, 0.35)';
-      c.lineWidth = 1;
+      ctx.save();
+      ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+      ctx.beginPath();
+      ctx.rect(vp.x, vp.y, vp.w, vp.h);
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(180, 210, 240, 0.35)';
+      ctx.lineWidth = 1;
       const t = this.elapsed * 1000;
-      for (let i = 0; i < 90; i++) {
-        const x = ((i * 137 + t * 0.6) % (renderer.width + 80)) - 40;
-        const y = ((i * 91  + t * 0.9) % (renderer.height + 60)) - 30;
-        c.beginPath();
-        c.moveTo(x, y);
-        c.lineTo(x - 6, y + 14);
-        c.stroke();
+      for (let i = 0; i < 70; i++) {
+        const x = vp.x + ((i * 137 + t * 0.6) % (vp.w + 80)) - 40;
+        const y = vp.y + ((i * 91  + t * 0.9) % (vp.h + 60)) - 30;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - 6, y + 14);
+        ctx.stroke();
       }
-      renderer.popScreen();
+      ctx.restore();
     }
+  }
 
-    if (this.mode === 'timetrial') this._renderTtHud();
+  _drawSplitDividers(renderer, layout) {
+    const ctx = renderer.ctx;
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+    ctx.fillStyle = '#0c0f14';
+    const n = layout.length;
+    if (n === 2) {
+      ctx.fillRect(renderer.width / 2 - 1, 0, 2, renderer.height);
+    } else if (n >= 3) {
+      ctx.fillRect(renderer.width / 2 - 1, 0, 2, renderer.height);
+      ctx.fillRect(0, renderer.height / 2 - 1, renderer.width, 2);
+    }
+    ctx.restore();
   }
 
   _renderGhost(renderer) {

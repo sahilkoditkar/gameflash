@@ -5,8 +5,11 @@
 // Trace samples are recorded at the engine's fixed step (60 Hz). To keep
 // localStorage usage small we downsample to ~12 Hz (every 5 steps).
 
+// VERSION bumped to 2 because track world coordinates were rescaled.
+// Old PBs (recorded in the previous coordinate space) are silently
+// discarded by `_load` when the version doesn't match.
 const KEY = (trackId) => `gameflash:rural-racing:tt:${trackId}`;
-const VERSION = 1;
+const VERSION = 2;
 const SAMPLE_EVERY_N_STEPS = 5;     // 60 Hz / 5 = 12 Hz
 const MAX_SAMPLES = 1200;            // ~100 seconds of lap
 

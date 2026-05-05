@@ -36,12 +36,20 @@ export class HUD {
 
   update(playerKey, data) {
     const e = this.panels.get(playerKey);
-    if (!e) return;
+    if (!e || !data) return;
     if (data.title != null) e.titleEl.textContent = data.title;
     if (data.lap != null) e.lapEl.textContent = data.lap;
     if (data.pos != null) e.posEl.textContent = data.pos;
     if (data.info != null) e.infoEl.textContent = data.info;
     if (data.speed != null) e.speedEl.textContent = String(Math.round(data.speed));
+  }
+
+  // Move an existing panel. `position` is a partial style object; any property
+  // not provided is cleared so callers can switch from {left} to {right} cleanly.
+  setPosition(playerKey, position) {
+    const e = this.panels.get(playerKey);
+    if (!e) return;
+    Object.assign(e.panel.style, { top: '', left: '', right: '', bottom: '', ...position });
   }
 
   destroy() {

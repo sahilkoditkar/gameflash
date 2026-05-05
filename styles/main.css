@@ -234,6 +234,12 @@ html, body {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.wizard-choices-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 540px) {
+  .wizard-choices-4 { grid-template-columns: 1fr 1fr; }
+}
 .wizard-choice {
   display: flex;
   flex-direction: column;
