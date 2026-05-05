@@ -83,6 +83,13 @@ export class RaceWizard {
     this.root = ctx.overlayRoot;
   }
 
+  // Run only the player-setup phase (used by Time Trial and Career modes).
+  // `count` is the number of human players to set up. Returns the players
+  // array (same shape as `run()` produces) or `null` if cancelled.
+  async runPlayerSetup(count = 1) {
+    return this._step4Players(count);
+  }
+
   async run() {
     const count = await this._step1Count();
     if (!count) return null;

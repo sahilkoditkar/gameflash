@@ -1,25 +1,31 @@
-// RacingGame: the Scene. Wires track, vehicles, players, AI, HUD, and
-// race/lap state. On launch it runs a multi-step pre-race wizard that
-// resolves to a complete config (player count, track, options, players).
+// RacingGame: the Scene. Drives three modes through a single object so the
+// engine, render path, and most physics are shared:
 //
-// On restart (R after race finish) the same config is reused — the wizard
-// only runs the first time per launch.
+//   mode = 'race'        Full pre-race wizard, AI opponents, R/N restart.
+//   mode = 'timetrial'   Solo, no AI, no countdown end. Sectors + PB + ghost.
+//   mode = 'career'      Solo, AI opponents, championship records results
+//                        and feeds in the next track on Continue.
 
 import { Scene } from '../../engine/Scene.js';
 import { Track } from './Track.js';
 import { Vehicle } from './Vehicle.js';
 import { AIDriver } from './AIDriver.js';
 import { HUD } from './HUD.js';
+import { SkidLayer } from './SkidLayer.js';
+import { Haptics } from './Haptics.js';
 import { resolveCircles } from '../../engine/physics/Collision.js';
 import {
   RaceWizard, COLORS, DIFFICULTY, WEATHER, TIME_OF_DAY,
   bindingForDevice, applyLapsOverride, trackById
 } from './Wizard.js';
+import { TrackPicker } from './TrackPicker.js';
+import { TimeTrialStore, ghostAt } from './TimeTrialStore.js';
+import { Championship, AI_DRIVER_NAMES } from './Championship.js';
 
-const AI_NAMES = ['Reiner', 'Marlow', 'Pippa', 'Oso', 'Verity', 'Ash', 'Zeb', 'Cleo'];
 const AI_LINE_OFFSETS = [0, -22, 24, -10, 14, -18, 20, -8];
+const SKID_LATERAL_THRESHOLD = 70;       // |lateral speed| above this leaves marks
+const COLLISION_RUMBLE_THRESHOLD = 80;   // relative velocity for a strong rumble
 
-// Reserve colours that humans claim so AI doesn't accidentally double up.
 function aiColors(usedHexes) {
   return COLORS.map((c) => c.hex).filter((h) => !usedHexes.has(h));
 }
@@ -27,29 +33,22 @@ function aiColors(usedHexes) {
 export class RacingGame extends Scene {
   constructor(opts = {}) {
     super();
-    // `config` lets a caller skip the wizard (used internally by restart).
-    this.preset = opts.config || null;
+    this.mode = opts.mode || 'race';
+    this.preset = opts.config || null;       // skip wizard if supplied
     this.config = null;
+    this.championship = opts.championship || null;
   }
 
   async init() {
     const ctx = this.ctx;
-
-    // Ensure the canvas focus is back on so the wizard's keydown listeners
-    // receive Escape via window.
     ctx.canvas.focus({ preventScroll: true });
 
     if (!this.config) {
-      if (this.preset) {
-        this.config = this.preset;
-      } else {
-        const wizard = new RaceWizard(ctx);
-        this.config = await wizard.run();
-        if (!this.config) {
-          // Cancelled at any step — bail out to launcher.
-          window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
-          return;
-        }
+      this.config = await this._setupForMode();
+      if (!this.config) {
+        // Cancelled — bail back to launcher.
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+        return;
       }
     }
 
@@ -59,10 +58,8 @@ export class RacingGame extends Scene {
     this.track = new Track(trackData);
     applyLapsOverride(this.track, cfg.options.laps);
 
-    const weather = WEATHER[cfg.options.weather] || WEATHER.clear;
-    const timeDef = TIME_OF_DAY[cfg.options.time] || TIME_OF_DAY.day;
-    this.weather = weather;
-    this.timeDef = timeDef;
+    this.weather = WEATHER[cfg.options.weather] || WEATHER.clear;
+    this.timeDef = TIME_OF_DAY[cfg.options.time] || TIME_OF_DAY.day;
 
     this.vehicles = [];
     this.humanPlayers = [];
@@ -72,6 +69,25 @@ export class RacingGame extends Scene {
     this.countdown = 3.999;
     this.elapsed = 0;
     this.paused = false;
+    this.skids = new SkidLayer();
+    this.haptics = new Haptics();
+    this._collisionRumblePairs = new WeakMap();
+    this._raceFinishHandled = false;
+
+    // Time trial bookkeeping.
+    this._tt = null;
+    if (this.mode === 'timetrial') {
+      this._tt = {
+        store: new TimeTrialStore(cfg.trackId),
+        currentSamples: [],
+        lapStartElapsed: 0,
+        sectorTimes: [null, null, null],
+        currentSector: 0,
+        lastLapTime: null,
+        deltaText: '',
+        deltaShowTime: 0
+      };
+    }
 
     // Build players from chosen devices/colours.
     const usedHexes = new Set();
@@ -88,26 +104,28 @@ export class RacingGame extends Scene {
       const v = new Vehicle({
         x: g.x, y: g.y, angle: g.angle,
         color: pdef.color.hex,
-        name: `P${i + 1}`,
+        name: pdef.name || `P${i + 1}`,
         isHuman: true,
-        gripMul: weather.gripMul
+        gripMul: this.weather.gripMul
       });
       this.vehicles.push(v);
       usedHexes.add(pdef.color.hex);
     }
 
-    // AI drivers: count + skill scale come from difficulty.
+    // AI drivers — disabled for time trial.
+    const wantAi = this.mode !== 'timetrial';
     const diff = DIFFICULTY[cfg.options.difficulty] || DIFFICULTY.normal;
+    const aiCount = wantAi ? (this.mode === 'career' ? 7 : diff.aiCount) : 0;
     const aiPalette = aiColors(usedHexes);
-    for (let i = 0; i < diff.aiCount; i++) {
+    for (let i = 0; i < aiCount; i++) {
       const g = grid[slot++ % grid.length];
-      const skill = diff.skillBase + (i / Math.max(1, diff.aiCount - 1)) * diff.skillSpread;
+      const skill = diff.skillBase + (i / Math.max(1, aiCount - 1)) * diff.skillSpread;
       const v = new Vehicle({
         x: g.x, y: g.y, angle: g.angle,
         color: aiPalette[i % aiPalette.length],
-        name: AI_NAMES[i % AI_NAMES.length],
+        name: AI_DRIVER_NAMES[i % AI_DRIVER_NAMES.length],
         isHuman: false,
-        gripMul: weather.gripMul
+        gripMul: this.weather.gripMul
       });
       this.vehicles.push(v);
       this.aiDrivers.push(new AIDriver({
@@ -120,31 +138,130 @@ export class RacingGame extends Scene {
       }));
     }
 
-    // Engine drone for human cars only.
     for (const _ of this.humanPlayers) this.engineSounds.push(ctx.audio.engineLoop());
 
-    // Camera: fit the entire track in one viewport.
     ctx.renderer.camera.setBounds(this.track.bounds);
     this._refitCamera();
 
-    // HUD.
     this.hud = new HUD(ctx.hudRoot);
-    if (this.humanPlayers.length === 1) {
-      this.hud.ensure('p1', { position: { top: '12px', right: '12px' } });
-    } else {
-      this.hud.ensure('p1', { position: { top: '12px', left: '64px' } });
-      this.hud.ensure('p2', { position: { top: '12px', right: '12px' } });
-    }
+    this.hud.ensure('p1', { position: { top: '12px', right: '12px' } });
+    if (this.mode === 'timetrial') this._buildTtHud();
+    if (this.mode === 'career') this._buildCareerHud();
 
     this._renderCountdownOverlay();
   }
 
+  // ---------- mode-specific setup ----------
+  async _setupForMode() {
+    if (this.preset) return this.preset;
+    if (this.mode === 'race') {
+      const wizard = new RaceWizard(this.ctx);
+      return wizard.run();
+    }
+    if (this.mode === 'timetrial') return this._timeTrialSetup();
+    if (this.mode === 'career') return this._careerSetup();
+    return null;
+  }
+
+  async _timeTrialSetup() {
+    // Track picker, then a single player setup.
+    const picker = new TrackPicker(this.ctx.overlayRoot);
+    const trackId = await picker.show();
+    if (!trackId) return null;
+    const wizard = new RaceWizard(this.ctx);
+    const players = await wizard.runPlayerSetup(1);
+    if (!players) return null;
+    return {
+      humans: 1, trackId,
+      options: { difficulty: 'normal', laps: null, weather: 'clear', time: 'day' },
+      players
+    };
+  }
+
+  async _careerSetup() {
+    // If a saved championship exists ask the player to resume or restart.
+    const existing = Championship.load();
+    if (existing && !existing.isComplete()) {
+      const resume = await this._askResumeChampionship(existing);
+      if (resume === null) return null;       // Esc
+      if (resume === 'resume') {
+        this.championship = existing;
+      } else {
+        Championship.clear();
+      }
+    } else if (existing && existing.isComplete()) {
+      // Old finished championship — clear it before starting a new one.
+      Championship.clear();
+    }
+
+    if (!this.championship) {
+      const wizard = new RaceWizard(this.ctx);
+      const players = await wizard.runPlayerSetup(1);
+      if (!players) return null;
+      this.championship = Championship.start({
+        device: players[0].device,
+        color: players[0].color,
+        name: 'You'
+      });
+      this.championship.save();
+    }
+
+    return this._configFromChampionship();
+  }
+
+  _configFromChampionship() {
+    const c = this.championship;
+    const player = c.player();
+    return {
+      humans: 1,
+      trackId: c.currentTrackId(),
+      options: { difficulty: 'normal', laps: null, weather: 'clear', time: 'day' },
+      players: [{ device: player.device, color: player.color, name: player.name || 'You' }]
+    };
+  }
+
+  _askResumeChampionship(existing) {
+    return new Promise((resolve) => {
+      const root = this.ctx.overlayRoot;
+      root.hidden = false;
+      root.replaceChildren();
+      const card = document.createElement('div');
+      card.className = 'overlay-card';
+      const standings = existing.standingsSorted().slice(0, 5)
+        .map((d, i) => `<tr><td>${i + 1}</td><td style="color:${d.color}">${d.name}</td><td>${d.points}</td></tr>`)
+        .join('');
+      card.innerHTML = `
+        <h2>Championship in progress</h2>
+        <p>Race ${existing.raceIndex() + 1} of ${existing.raceCount()} — current standings:</p>
+        <table style="margin: 0 auto 14px; border-collapse: collapse; font-family: ui-monospace, monospace;">${standings}</table>
+        <button class="wizard-primary" data-act="resume">Resume</button>
+        <button class="overlay-card-secondary" data-act="restart">Start over</button>
+      `;
+      // Inline secondary button styling is in main.css under .overlay-card button.secondary
+      card.querySelector('[data-act="restart"]').classList.add('secondary');
+      const cleanup = () => {
+        root.replaceChildren();
+        root.hidden = true;
+        window.removeEventListener('keydown', onKey);
+      };
+      const choose = (v) => { cleanup(); resolve(v); };
+      card.querySelector('[data-act="resume"]').addEventListener('click', () => choose('resume'));
+      card.querySelector('[data-act="restart"]').addEventListener('click', () => choose('restart'));
+      const onKey = (e) => { if (e.code === 'Escape') choose(null); };
+      window.addEventListener('keydown', onKey);
+      root.appendChild(card);
+    });
+  }
+
+  // ---------- destroy ----------
   destroy() {
     if (this.engineSounds) {
       for (const s of this.engineSounds) s.stop?.();
       this.engineSounds = [];
     }
     if (this.hud) this.hud.destroy();
+    if (this._ttHud) { this._ttHud.remove(); this._ttHud = null; }
+    if (this._careerHud) { this._careerHud.remove(); this._careerHud = null; }
     if (this.ctx?.overlayRoot) {
       this.ctx.overlayRoot.replaceChildren();
       this.ctx.overlayRoot.hidden = true;
@@ -154,8 +271,6 @@ export class RacingGame extends Scene {
     }
   }
 
-  // The render loop can fire while init's await chain is still running
-  // (wizard open). Guard the methods that depend on a built track.
   update(dt) { if (this.track) return this._update(dt); }
   render(renderer) {
     if (!this.track) { renderer.clear('#0c0f14'); return; }
@@ -180,6 +295,7 @@ export class RacingGame extends Scene {
         this.state = 'racing';
         this.elapsed = 0;
         for (const v of this.vehicles) v.lastLapStart = 0;
+        if (this._tt) { this._tt.lapStartElapsed = 0; this._tt.currentSector = 0; }
         this._clearOverlay();
         this.ctx.audio.beep({ freq: 880, duration: 0.18 });
       } else {
@@ -208,23 +324,51 @@ export class RacingGame extends Scene {
     for (const ai of this.aiDrivers) ai.update(dt);
 
     this._integrateAll(dt);
+    this._emitSkidMarks();
+    this.skids.update(dt);
     this._handleLaps();
+    if (this.mode === 'timetrial') this._updateTimeTrial(dt);
     this._updateRanking();
     this._updateHUD();
     this._updateAudio();
+    this._updateRumble(dt);
 
-    const allHumansDone = this.humanPlayers.every((_, i) => this.vehicles[i].finished);
-    if (this.state === 'racing' && allHumansDone) {
-      this.state = 'finished';
-      this._renderFinishedOverlay();
+    // Race finish detection — disabled for time trial.
+    if (this.mode !== 'timetrial' && !this._raceFinishHandled
+        && this.state === 'racing'
+        && this.humanPlayers.every((_, i) => this.vehicles[i].finished)) {
+      // Wait for the AI to finish too so we can rank everyone.
+      if (this.vehicles.every((v) => v.finished)) {
+        this._raceFinishHandled = true;
+        this.state = 'finished';
+        this._onRaceFinished();
+      } else {
+        // Auto-finish stragglers after a short grace period (they cross or get DNF).
+        if (!this._gracePeriodStart) this._gracePeriodStart = this.elapsed;
+        if (this.elapsed - this._gracePeriodStart > 12) {
+          for (const v of this.vehicles) {
+            if (!v.finished) { v.finished = true; v.finishTime = this.elapsed + 999; }
+          }
+          this._raceFinishHandled = true;
+          this.state = 'finished';
+          this._onRaceFinished();
+        }
+      }
     }
   }
 
   _integrateAll(dt) {
     for (const v of this.vehicles) v.update(dt, this.track);
+    // Pairwise vehicle collisions; emit a rumble pulse for human cars.
     for (let i = 0; i < this.vehicles.length; i++) {
       for (let j = i + 1; j < this.vehicles.length; j++) {
-        resolveCircles(this.vehicles[i].body, this.vehicles[j].body, 0.25);
+        const a = this.vehicles[i], b = this.vehicles[j];
+        const relSpeed = Math.hypot(a.body.vx - b.body.vx, a.body.vy - b.body.vy);
+        const collided = resolveCircles(a.body, b.body, 0.25);
+        if (collided && relSpeed > COLLISION_RUMBLE_THRESHOLD) {
+          this._rumbleForVehicle(a, { duration: 160, strong: 0.8, weak: 0.5 });
+          this._rumbleForVehicle(b, { duration: 160, strong: 0.8, weak: 0.5 });
+        }
       }
     }
   }
@@ -238,9 +382,10 @@ export class RacingGame extends Scene {
       if (v._lastSeg > total - 6 && v.segIndex < 6) {
         const lapTime = this.elapsed - v.lastLapStart;
         if (v.lap > 0 && lapTime < v.bestLapTime) v.bestLapTime = lapTime;
+        if (v.isHuman && this._tt && v.lap > 0) this._onTtLapComplete(v, lapTime);
         v.lastLapStart = this.elapsed;
         v.lap += 1;
-        if (v.lap >= this.track.totalLaps) {
+        if (this.mode !== 'timetrial' && v.lap >= this.track.totalLaps) {
           v.finished = true;
           v.finishTime = this.elapsed;
         }
@@ -269,10 +414,11 @@ export class RacingGame extends Scene {
       const speedKph = Math.abs(v.forwardSpeed) * 0.3;
       const lapNum = Math.min(v.lap + 1, total);
       const padState = this.humanPlayers[i].hasGamepad() ? 'pad' : 'kbd';
+      const lapText = this.mode === 'timetrial' ? `LAP ${v.lap + 1}` : `LAP ${lapNum}/${total}`;
       this.hud.update(`p${i + 1}`, {
         title: `Player ${i + 1} — ${padState}`,
-        lap: `LAP ${lapNum}/${total}`,
-        pos: `P${pos}/${this.vehicles.length}`,
+        lap: lapText,
+        pos: this.mode === 'timetrial' ? '' : `P${pos}/${this.vehicles.length}`,
         info: v.offTrack ? 'OFF TRACK' : (v.finished ? 'FINISHED' : ''),
         speed: speedKph
       });
@@ -287,23 +433,162 @@ export class RacingGame extends Scene {
     }
   }
 
+  _updateRumble(dt) {
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      const player = this.humanPlayers[i];
+      const v = this.vehicles[i];
+      if (!player.hasGamepad()) continue;
+      const padIdx = player.gamepadIndex();
+      if (v.offTrack && Math.abs(v.forwardSpeed) > 60) {
+        // Sustained low rumble while off-track at speed.
+        this.haptics.sustainPad(padIdx, dt, { intervalMs: 220, duration: 220, strong: 0.15, weak: 0.45 });
+      }
+    }
+  }
+
+  _rumbleForVehicle(v, opts) {
+    if (!v.isHuman) return;
+    const idx = this.vehicles.indexOf(v);
+    if (idx < 0 || idx >= this.humanPlayers.length) return;
+    const player = this.humanPlayers[idx];
+    if (!player.hasGamepad()) return;
+    this.haptics.pulsePad(player.gamepadIndex(), opts);
+  }
+
+  // --- Skid marks ---
+  _emitSkidMarks() {
+    for (const v of this.vehicles) {
+      const wheels = v.getWheelPositions();
+      const prev = v._prevWheels;
+      v._prevWheels = wheels;
+      if (!prev) continue;
+
+      const sliding = Math.abs(v.lateralSpeed) > SKID_LATERAL_THRESHOLD;
+      const handbraking = v.handbrake && Math.abs(v.forwardSpeed) > 30;
+      const dirt = v.offTrack && Math.abs(v.forwardSpeed) > 100;
+
+      if (sliding || handbraking) {
+        for (let i = 0; i < 4; i++) {
+          if (handbraking && !wheels[i].rear && !sliding) continue;
+          this.skids.emit(prev[i].x, prev[i].y, wheels[i].x, wheels[i].y, '#1a1d22', 0.55);
+        }
+      } else if (dirt) {
+        for (let i = 0; i < 4; i++) {
+          this.skids.emit(prev[i].x, prev[i].y, wheels[i].x, wheels[i].y, '#a07a4a', 0.45);
+        }
+      }
+    }
+  }
+
+  // --- Time trial bookkeeping ---
+  _updateTimeTrial(dt) {
+    const tt = this._tt;
+    if (!tt || this.state !== 'racing') return;
+    const v = this.vehicles[0];
+
+    // Sample player position for ghost recording (60 Hz fixed step).
+    if (v.lap >= 1) {
+      const lapElapsed = this.elapsed - v.lastLapStart;
+      tt.currentSamples.push({ t: lapElapsed, x: v.body.x, y: v.body.y, angle: v.body.angle });
+    }
+
+    // Sector boundary crossings (3 sectors of equal segment span).
+    const total = this.track.centerline.length;
+    const sectorLen = total / 3;
+    const newSector = Math.min(2, Math.floor(v.segIndex / sectorLen));
+    if (newSector !== tt.currentSector) {
+      // Crossed a sector boundary; record the time.
+      const lapElapsed = this.elapsed - v.lastLapStart;
+      tt.sectorTimes[tt.currentSector] = lapElapsed;
+      tt.currentSector = newSector;
+    }
+
+    if (tt.deltaShowTime > 0) tt.deltaShowTime -= dt;
+  }
+
+  _onTtLapComplete(v, lapTime) {
+    const tt = this._tt;
+    tt.lastLapTime = lapTime;
+    // Persist if PB beaten.
+    const prev = tt.store.bestLapTime();
+    if (tt.store.trySave(lapTime, tt.currentSamples)) {
+      tt.deltaText = prev != null ? `−${(prev - lapTime).toFixed(3)}s NEW PB` : `${lapTime.toFixed(3)}s FIRST LAP`;
+    } else if (prev != null) {
+      const delta = lapTime - prev;
+      tt.deltaText = `${delta >= 0 ? '+' : ''}${delta.toFixed(3)}s`;
+    }
+    tt.deltaShowTime = 3.0;
+    tt.currentSamples = [];
+    tt.sectorTimes = [null, null, null];
+    tt.currentSector = 0;
+  }
+
+  _buildTtHud() {
+    const panel = document.createElement('div');
+    panel.className = 'hud-panel';
+    panel.style.top = '12px';
+    panel.style.left = '12px';
+    panel.style.minWidth = '180px';
+    panel.innerHTML = `
+      <div class="label">TIME TRIAL</div>
+      <div class="value" data-role="lap">--:--:---</div>
+      <div class="label" style="margin-top:4px;">LAST · BEST</div>
+      <div class="value" data-role="last-best">— · —</div>
+      <div class="label" style="margin-top:4px;">DELTA</div>
+      <div class="value" data-role="delta">—</div>
+    `;
+    this.ctx.hudRoot.appendChild(panel);
+    this._ttHud = panel;
+  }
+
+  _renderTtHud() {
+    if (!this._ttHud || !this._tt) return;
+    const v = this.vehicles[0];
+    if (!v) return;
+    const lapElapsed = Math.max(0, this.elapsed - v.lastLapStart);
+    const last = this._tt.lastLapTime;
+    const best = this._tt.store.bestLapTime();
+    this._ttHud.querySelector('[data-role="lap"]').textContent = formatTime(lapElapsed);
+    this._ttHud.querySelector('[data-role="last-best"]').textContent =
+      `${last != null ? formatTime(last) : '—'} · ${best != null ? formatTime(best) : '—'}`;
+    const delta = this._tt.deltaShowTime > 0 ? this._tt.deltaText : '—';
+    this._ttHud.querySelector('[data-role="delta"]').textContent = delta;
+  }
+
+  // --- Career HUD ---
+  _buildCareerHud() {
+    const panel = document.createElement('div');
+    panel.className = 'hud-panel';
+    panel.style.top = '12px';
+    panel.style.left = '12px';
+    panel.style.minWidth = '180px';
+    const c = this.championship;
+    panel.innerHTML = `
+      <div class="label">CHAMPIONSHIP</div>
+      <div class="value">Race ${c.raceIndex() + 1}/${c.raceCount()}</div>
+      <div class="label" style="margin-top:4px;">CIRCUIT</div>
+      <div class="value">${trackById(c.currentTrackId()).name}</div>
+    `;
+    this.ctx.hudRoot.appendChild(panel);
+    this._careerHud = panel;
+  }
+
   // --- Render ---
   _render(renderer) {
     renderer.clear('#1a1f1a');
     renderer.pushWorld();
     this.track.draw(renderer);
+    this.skids.draw(renderer.ctx);
+    this._renderGhost(renderer);
     for (const v of this.vehicles) v.draw(renderer.ctx);
     renderer.popWorld();
 
-    // Time of day tint (full screen, dimmer).
     if (this.timeDef?.tint) {
       renderer.pushScreen();
       renderer.ctx.fillStyle = this.timeDef.tint;
       renderer.ctx.fillRect(0, 0, renderer.width, renderer.height);
       renderer.popScreen();
     }
-
-    // Rain overlay (simple animated streaks).
     if (this.config?.options.weather === 'rain') {
       renderer.pushScreen();
       const c = renderer.ctx;
@@ -320,6 +605,29 @@ export class RacingGame extends Scene {
       }
       renderer.popScreen();
     }
+
+    if (this.mode === 'timetrial') this._renderTtHud();
+  }
+
+  _renderGhost(renderer) {
+    if (this.mode !== 'timetrial' || !this._tt) return;
+    const samples = this._tt.store.bestSamples();
+    if (!samples) return;
+    const v = this.vehicles[0];
+    if (!v || v.lap < 1) return;
+    const lapElapsed = this.elapsed - v.lastLapStart;
+    const ghost = ghostAt(samples, lapElapsed);
+    if (!ghost) return;
+    const c = renderer.ctx;
+    c.save();
+    c.globalAlpha = 0.45;
+    c.translate(ghost.x, ghost.y);
+    c.rotate(ghost.angle);
+    c.fillStyle = '#ffffff';
+    c.fillRect(-16, -10, 32, 20);
+    c.fillStyle = 'rgba(20, 28, 40, 0.6)';
+    c.fillRect(2, -8, 8, 16);
+    c.restore();
   }
 
   // --- Overlays ---
@@ -343,6 +651,15 @@ export class RacingGame extends Scene {
     root.hidden = true;
     root.replaceChildren();
   }
+
+  _onRaceFinished() {
+    if (this.mode === 'career' && this.championship) {
+      this._handleCareerRaceFinished();
+    } else {
+      this._renderFinishedOverlay();
+    }
+  }
+
   _renderFinishedOverlay() {
     const root = this.ctx.overlayRoot;
     if (!root) return;
@@ -350,14 +667,9 @@ export class RacingGame extends Scene {
     root.replaceChildren();
     const card = document.createElement('div');
     card.className = 'overlay-card';
-    const sorted = this.vehicles.slice().sort((a, b) => {
-      if (a.finished && b.finished) return a.finishTime - b.finishTime;
-      if (a.finished) return -1;
-      if (b.finished) return 1;
-      return b.progress - a.progress;
-    });
+    const sorted = this._sortedResults();
     const rows = sorted.map((v, i) => {
-      const t = v.finished ? `${v.finishTime.toFixed(2)}s` : 'DNF';
+      const t = v.finished && v.finishTime < 999 ? `${v.finishTime.toFixed(2)}s` : 'DNF';
       const best = v.bestLapTime !== Infinity ? `best ${v.bestLapTime.toFixed(2)}s` : '';
       return `<tr><td>${i + 1}</td><td style="color:${v.color}">${v.name}</td><td>${t}</td><td style="color:#8b95a7">${best}</td></tr>`;
     }).join('');
@@ -381,9 +693,106 @@ export class RacingGame extends Scene {
     window.addEventListener('keydown', onKey);
   }
 
+  _handleCareerRaceFinished() {
+    const sorted = this._sortedResults();
+    const results = sorted.map((v) => ({
+      name: v.name,
+      finishTime: v.finishTime,
+      lap: v.lap,
+      color: v.color
+    }));
+    this.championship.recordRace(results);
+    this.championship.advance();
+    this.championship.save();
+    if (this.championship.isComplete()) {
+      this._renderChampionshipFinale();
+    } else {
+      this._renderChampionshipStandings();
+    }
+  }
+
+  _renderChampionshipStandings() {
+    const root = this.ctx.overlayRoot;
+    root.hidden = false;
+    root.replaceChildren();
+    const card = document.createElement('div');
+    card.className = 'overlay-card';
+    const standings = this.championship.standingsSorted();
+    const rows = standings.map((d, i) =>
+      `<tr><td>${i + 1}</td><td style="color:${d.color}">${d.name}</td><td>${d.points}</td></tr>`
+    ).join('');
+    const next = trackById(this.championship.currentTrackId());
+    card.innerHTML = `
+      <h2>Standings — ${this.championship.raceIndex()}/${this.championship.raceCount()} done</h2>
+      <table style="margin: 0 auto 14px; border-collapse: collapse; font-family: ui-monospace, monospace;">${rows}</table>
+      <p>Next: <strong>${next.name}</strong></p>
+      <button class="wizard-primary" data-act="next">Continue →</button>
+      <button class="overlay-card-secondary secondary" data-act="quit">Save &amp; quit</button>
+    `;
+    root.appendChild(card);
+    const cleanup = () => { window.removeEventListener('keydown', onKey); root.replaceChildren(); root.hidden = true; };
+    const onKey = (e) => {
+      if (e.code === 'Escape') { cleanup(); window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' })); }
+      else if (e.code === 'Enter') { cleanup(); this._restart(false /* force re-config from championship */); }
+    };
+    window.addEventListener('keydown', onKey);
+    card.querySelector('[data-act="next"]').addEventListener('click', () => { cleanup(); this._restart(false); });
+    card.querySelector('[data-act="quit"]').addEventListener('click', () => {
+      cleanup(); window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+    });
+  }
+
+  _renderChampionshipFinale() {
+    const root = this.ctx.overlayRoot;
+    root.hidden = false;
+    root.replaceChildren();
+    const card = document.createElement('div');
+    card.className = 'overlay-card';
+    const standings = this.championship.standingsSorted();
+    const rows = standings.map((d, i) =>
+      `<tr><td>${i + 1}</td><td style="color:${d.color}">${d.name}</td><td>${d.points}</td></tr>`
+    ).join('');
+    const champion = standings[0];
+    card.innerHTML = `
+      <h2>Season ended</h2>
+      <p>Champion: <strong style="color:${champion.color}">${champion.name}</strong> · ${champion.points} pts</p>
+      <table style="margin: 0 auto 14px; border-collapse: collapse; font-family: ui-monospace, monospace;">${rows}</table>
+      <button class="wizard-primary" data-act="new">New season</button>
+      <button class="overlay-card-secondary secondary" data-act="menu">Menu</button>
+    `;
+    root.appendChild(card);
+    const cleanup = () => { root.replaceChildren(); root.hidden = true; };
+    card.querySelector('[data-act="new"]').addEventListener('click', () => {
+      Championship.clear();
+      this.championship = null;
+      this.config = null;
+      cleanup();
+      this.destroy();
+      this.init();
+    });
+    card.querySelector('[data-act="menu"]').addEventListener('click', () => {
+      cleanup();
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+    });
+  }
+
+  _sortedResults() {
+    return this.vehicles.slice().sort((a, b) => {
+      if (a.finished && b.finished) return a.finishTime - b.finishTime;
+      if (a.finished) return -1;
+      if (b.finished) return 1;
+      return b.progress - a.progress;
+    });
+  }
+
   async _restart(reuseConfig) {
     this.destroy();
-    if (!reuseConfig) this.config = null;
+    if (this.mode === 'career') {
+      // Always rebuild config from championship state (next track or replay).
+      this.config = this._configFromChampionship();
+    } else if (!reuseConfig) {
+      this.config = null;
+    }
     return this.init();
   }
 
@@ -401,4 +810,11 @@ export class RacingGame extends Scene {
       this._clearOverlay();
     }
   }
+}
+
+function formatTime(s) {
+  if (s == null || !isFinite(s)) return '—';
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec.toFixed(3).padStart(6, '0')}`;
 }

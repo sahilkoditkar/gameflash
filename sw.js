@@ -5,7 +5,7 @@
 //   - Network-only for non-GET and cross-origin requests.
 // The cache name is versioned; bumping the version invalidates the old shell.
 
-const CACHE_VERSION = 'gameflash-v5';
+const CACHE_VERSION = 'gameflash-v6';
 const SHELL_PATHS = [
   './',
   './index.html',
@@ -39,12 +39,20 @@ const SHELL_PATHS = [
   './src/games/rural-racing/HUD.js',
   './src/games/rural-racing/Wizard.js',
   './src/games/rural-racing/TrackPicker.js',
+  './src/games/rural-racing/SkidLayer.js',
+  './src/games/rural-racing/Haptics.js',
+  './src/games/rural-racing/Championship.js',
+  './src/games/rural-racing/TimeTrialStore.js',
   './src/games/rural-racing/tracks/index.js',
   './src/games/rural-racing/tracks/countryside.js',
   './src/games/rural-racing/tracks/silverstone.js',
   './src/games/rural-racing/tracks/spa.js',
   './src/games/rural-racing/tracks/miami.js',
   './src/games/rural-racing/tracks/monaco.js',
+  './src/games/rural-racing/tracks/suzuka.js',
+  './src/games/rural-racing/tracks/monza.js',
+  './src/games/rural-racing/tracks/imola.js',
+  './src/games/rural-racing/tracks/bahrain.js',
   './src/games/arena-brawl/index.js',
   './src/games/arena-brawl/BrawlGame.js',
   './src/games/arena-brawl/Fighter.js'

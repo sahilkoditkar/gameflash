@@ -42,6 +42,13 @@ const THEMES = {
     decoTypes: ['barrier', 'barrier', 'palm', 'grandstand'],
     treePalette: ['#2f7a4a'],
     barrierTight: true
+  },
+  desert: {
+    grass: '#c9a86a',
+    grassBands: 'rgba(0,0,0,0.04)',
+    decoTypes: ['palm', 'rock', 'rock', 'grandstand'],
+    treePalette: ['#2f7a4a'],
+    barrierTight: false
   }
 };
 

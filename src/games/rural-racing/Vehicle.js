@@ -42,6 +42,30 @@ export class Vehicle {
     this.totalRaceTime = 0;
     this.bestLapTime = Infinity;
     this.lastLapStart = 0;
+    this.lateralSpeed = 0;        // signed sideways velocity, set by update()
+  }
+
+  // Local wheel positions: rear-left, rear-right, front-left, front-right.
+  static WHEELS_LOCAL = [
+    { x: -13, y: -10, rear: true  },
+    { x: -13, y:  10, rear: true  },
+    { x:   8, y: -10, rear: false },
+    { x:   8, y:  10, rear: false }
+  ];
+
+  // Return the four wheels in world coordinates.
+  getWheelPositions() {
+    const cosA = Math.cos(this.body.angle);
+    const sinA = Math.sin(this.body.angle);
+    const out = [];
+    for (const w of Vehicle.WHEELS_LOCAL) {
+      out.push({
+        x: this.body.x + w.x * cosA - w.y * sinA,
+        y: this.body.y + w.x * sinA + w.y * cosA,
+        rear: w.rear
+      });
+    }
+    return out;
   }
 
   get speed() {
@@ -114,6 +138,7 @@ export class Vehicle {
     // Apply drags. Lateral grip = decay toward zero.
     vf -= vf * dragK * dt;
     vl *= Math.pow(gripDecay, dt);
+    this.lateralSpeed = vl;
 
     // Recompose.
     const cosB = Math.cos(b.angle);
