@@ -1,4 +1,4 @@
-// Camera with smooth follow and rectangular bounds.
+// Camera with smooth follow, rectangular bounds, and fit-to-bounds.
 // The camera is value-based (no DOM, no canvas) — Renderer queries x/y/zoom.
 
 import { clamp, lerp } from '../utils/math.js';
@@ -18,14 +18,24 @@ export class Camera {
   setZoom(z) { this.zoom = z; }
   setBounds(b) { this.bounds = b; }
 
-  // Snap immediately to (x, y) — used for first frame to avoid pan-in.
+  // Set zoom and center so the given bounds rectangle fully fits the viewport
+  // with optional padding (in world units).
+  fitToBounds(bounds, paddingWorld = 0) {
+    const w = bounds.maxX - bounds.minX + paddingWorld * 2;
+    const h = bounds.maxY - bounds.minY + paddingWorld * 2;
+    if (w <= 0 || h <= 0 || this.viewW <= 0 || this.viewH <= 0) return;
+    const z = Math.min(this.viewW / w, this.viewH / h);
+    this.zoom = z;
+    this.x = (bounds.minX + bounds.maxX) / 2;
+    this.y = (bounds.minY + bounds.maxY) / 2;
+  }
+
   snapTo(x, y) {
     this.x = x;
     this.y = y;
     this._clampToBounds();
   }
 
-  // Smoothly chase a target. Call once per fixed update.
   follow(targetX, targetY, dtFactor = 1) {
     const t = 1 - Math.pow(1 - this.smoothness, dtFactor);
     this.x = lerp(this.x, targetX, t);
@@ -38,7 +48,6 @@ export class Camera {
     const halfW = (this.viewW / this.zoom) / 2;
     const halfH = (this.viewH / this.zoom) / 2;
     const { minX, minY, maxX, maxY } = this.bounds;
-    // If world is smaller than view, center on the world.
     if (maxX - minX < halfW * 2) this.x = (minX + maxX) / 2;
     else this.x = clamp(this.x, minX + halfW, maxX - halfW);
     if (maxY - minY < halfH * 2) this.y = (minY + maxY) / 2;
