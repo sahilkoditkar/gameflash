@@ -178,6 +178,11 @@ export class RacingGame extends Scene {
       this._playerCameras.push(cam);
     }
 
+    // Pre-compute mini-map projections for every panel size we might use.
+    // Each entry is keyed by viewport width (4-player splits get a smaller
+    // minimap than full-screen so it doesn't crowd the view).
+    this._minimaps = new Map();
+
     this.hud = new HUD(ctx.hudRoot);
     for (let i = 0; i < this.humanPlayers.length; i++) {
       this.hud.ensure(`p${i + 1}`);
@@ -357,21 +362,34 @@ export class RacingGame extends Scene {
 
     if (this.state === 'racing') this.elapsed += dt;
 
-    // Human input.
+    // Human input. A finished car is parked — controls are ignored so the
+    // player just watches the rest of the field cross the line. Pause still
+    // works.
     for (let i = 0; i < this.humanPlayers.length; i++) {
       const p = this.humanPlayers[i];
       const v = this.vehicles[i];
-      const accel = p.isDown('accelerate') ? 1 : 0;
-      const brake = p.isDown('brake') ? 1 : 0;
-      v.setControl({
-        steer: p.axis('steer'),
-        throttle: accel - brake,
-        handbrake: p.isDown('handbrake')
-      });
+      if (v.finished) {
+        v.setControl({ steer: 0, throttle: 0, handbrake: true });
+      } else {
+        const accel = p.isDown('accelerate') ? 1 : 0;
+        const brake = p.isDown('brake') ? 1 : 0;
+        v.setControl({
+          steer: p.axis('steer'),
+          throttle: accel - brake,
+          handbrake: p.isDown('handbrake')
+        });
+      }
       if (p.justPressed('pause')) this.togglePause();
     }
 
-    for (const ai of this.aiDrivers) ai.update(dt);
+    // AI cars also park once they finish — they no longer steer.
+    for (const ai of this.aiDrivers) {
+      if (ai.vehicle.finished) {
+        ai.vehicle.setControl({ steer: 0, throttle: 0, handbrake: true });
+      } else {
+        ai.update(dt);
+      }
+    }
 
     this._integrateAll(dt);
     this._emitSkidMarks();
@@ -630,6 +648,12 @@ export class RacingGame extends Scene {
     for (let i = 0; i < layout.length; i++) {
       this._renderViewport(renderer, layout[i], i);
     }
+    // 3-player mode: render the stats panel in the empty 4th cell.
+    if (this.humanPlayers.length === 3) {
+      const halfW = renderer.width / 2;
+      const halfH = renderer.height / 2;
+      this._renderStatsPanel(renderer, { x: halfW, y: halfH, w: halfW, h: halfH });
+    }
     if (this.humanPlayers.length >= 2) this._drawSplitDividers(renderer, layout);
     if (this.mode === 'timetrial') this._renderTtHud();
   }
@@ -659,6 +683,7 @@ export class RacingGame extends Scene {
 
     // Per-viewport screen-space overlays.
     this._renderScreenEffects(renderer, vp);
+    this._drawMinimap(renderer, vp, playerIdx);
   }
 
   _renderScreenEffects(renderer, vp) {
@@ -704,6 +729,161 @@ export class RacingGame extends Scene {
       ctx.fillRect(0, renderer.height / 2 - 1, renderer.width, 2);
     }
     ctx.restore();
+  }
+
+  // Build a Path2D + projection from the track's centerline so each frame's
+  // mini-map draw is just a stroke + N filled circles.
+  _buildMinimap(W, H) {
+    const PAD = 10;
+    const b = this.track.bounds;
+    const tw = b.maxX - b.minX;
+    const th = b.maxY - b.minY;
+    const scale = Math.min((W - PAD * 2) / tw, (H - PAD * 2) / th);
+    const ox = PAD + (W - PAD * 2 - tw * scale) / 2 - b.minX * scale;
+    const oy = PAD + (H - PAD * 2 - th * scale) / 2 - b.minY * scale;
+
+    const path = new Path2D();
+    const cl = this.track.centerline;
+    for (let i = 0; i < cl.length; i++) {
+      const px = ox + cl[i].x * scale;
+      const py = oy + cl[i].y * scale;
+      if (i === 0) path.moveTo(px, py);
+      else path.lineTo(px, py);
+    }
+    path.closePath();
+    return { w: W, h: H, scale, ox, oy, path };
+  }
+
+  _drawMinimap(renderer, vp, playerIdx) {
+    const ctx = renderer.ctx;
+    // Choose mini-map size relative to viewport so it stays unobtrusive.
+    const W = Math.max(110, Math.min(180, Math.round(vp.w * 0.22)));
+    const H = Math.round(W * 2 / 3);
+    let m = this._minimaps.get(W);
+    if (!m) { m = this._buildMinimap(W, H); this._minimaps.set(W, m); }
+    // Top-right corner of the viewport.
+    const x = vp.x + vp.w - m.w - 12;
+    const y = vp.y + 12;
+
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+
+    // Panel background.
+    ctx.fillStyle = 'rgba(12, 15, 20, 0.6)';
+    ctx.fillRect(x, y, m.w, m.h);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, m.w - 1, m.h - 1);
+
+    // Track centerline (cached path) translated into the panel.
+    ctx.translate(x, y);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke(m.path);
+    // Start/finish marker.
+    const start = this.track.centerline[0];
+    ctx.fillStyle = '#ffcc33';
+    ctx.beginPath();
+    ctx.arc(m.ox + start.x * m.scale, m.oy + start.y * m.scale, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cars as colour-coded dots; the viewing player's own car gets a ring.
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      const px = m.ox + v.body.x * m.scale;
+      const py = m.oy + v.body.y * m.scale;
+      ctx.fillStyle = v.color;
+      ctx.beginPath();
+      ctx.arc(px, py, i === playerIdx ? 3.5 : 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      if (i === playerIdx) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Stats / leaderboard panel rendered in the empty quadrant of a 3-player
+  // 2x2 split so every quadrant is filled.
+  _renderStatsPanel(renderer, vp) {
+    const ctx = renderer.ctx;
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+
+    // Background.
+    ctx.fillStyle = '#0c0f14';
+    ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
+    // Subtle inner border.
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(vp.x + 0.5, vp.y + 0.5, vp.w - 1, vp.h - 1);
+
+    // Header.
+    const px = vp.x + 24;
+    let py = vp.y + 32;
+    ctx.fillStyle = '#ffcc33';
+    ctx.font = 'bold 18px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(this.trackData.name, px, py);
+    py += 22;
+
+    ctx.fillStyle = '#8b95a7';
+    ctx.font = '12px ui-monospace, monospace';
+    const leaderLap = this.vehicles.reduce((mx, v) => Math.max(mx, v.lap + 1), 1);
+    const totalLaps = this.track.totalLaps;
+    const stateLabel = this.state === 'countdown'
+      ? 'Countdown'
+      : this.state === 'finished'
+        ? 'Finished'
+        : `Lap ${Math.min(leaderLap, totalLaps)}/${totalLaps}`;
+    ctx.fillText(`${stateLabel}  ·  ${formatTime(this.elapsed)}  ·  ${this.vehicles.length} cars`, px, py);
+    py += 28;
+
+    // Leaderboard.
+    const sorted = this._rankedAll();
+    const rowH = 22;
+    const maxRows = Math.min(sorted.length, Math.floor((vp.h - (py - vp.y) - 16) / rowH));
+    ctx.font = '14px ui-monospace, monospace';
+    for (let i = 0; i < maxRows; i++) {
+      const v = sorted[i];
+      const rowY = py + i * rowH;
+      // Position
+      ctx.fillStyle = '#8b95a7';
+      ctx.fillText(`${(i + 1).toString().padStart(2, ' ')}.`, px, rowY);
+      // Car dot.
+      ctx.fillStyle = v.color;
+      ctx.beginPath();
+      ctx.arc(px + 36, rowY - 5, 5, 0, Math.PI * 2);
+      ctx.fill();
+      // Name.
+      ctx.fillStyle = v.isHuman ? '#fff' : '#cdd2db';
+      ctx.fillText(v.name, px + 50, rowY);
+      // Lap + status (right-aligned).
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#8b95a7';
+      const status = v.finished
+        ? (v.finishTime < 999 ? formatTime(v.finishTime) : 'DNF')
+        : `L${v.lap}/${this.track.totalLaps}`;
+      ctx.fillText(status, vp.x + vp.w - 24, rowY);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  }
+
+  _rankedAll() {
+    return this.vehicles.slice().sort((a, b) => {
+      if (a.finished && b.finished) return a.finishTime - b.finishTime;
+      if (a.finished) return -1;
+      if (b.finished) return 1;
+      return b.progress - a.progress;
+    });
   }
 
   _renderGhost(renderer) {
