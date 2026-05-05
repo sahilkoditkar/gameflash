@@ -1,6 +1,10 @@
 // RacingGame: the Scene. Wires track, vehicles, players, AI, HUD, and
-// race/lap state. Supports 1 or 2 local human players (split-screen for 2)
-// plus AI fillers.
+// race/lap state.
+//
+// The track is small enough to fit a single window, so we render it with a
+// single fit-to-bounds camera even when 2 humans are playing — both cars are
+// always on screen. The split-screen render path is preserved on `useSplit`
+// for tracks that may need it later.
 
 import { Scene } from '../../engine/Scene.js';
 import { Track } from './Track.js';
@@ -30,9 +34,7 @@ const KB_LAYOUT_P2 = {
   }
 };
 const PAD_LAYOUT = {
-  gamepadAxes: {
-    steer: { axis: 0 }
-  },
+  gamepadAxes: { steer: { axis: 0 } },
   gamepadActions: {
     accelerate: ['rt', 'a'],
     brake: ['lt', 'b'],
@@ -41,12 +43,24 @@ const PAD_LAYOUT = {
   }
 };
 
+// Per-AI personality presets. Each entry produces a clearly different driver:
+// preferred line offset (right-of-travel), skill, cornering caution, and base
+// lookahead distance. The first AI is the cleanest racer; the rest deviate.
+const AI_PERSONALITIES = [
+  { name: 'Reiner',  skill: 0.78, lineOffset:  0,   cornerCaution: 0.45, lookahead: 80 },
+  { name: 'Marlow',  skill: 0.66, lineOffset: -22,  cornerCaution: 0.55, lookahead: 86 },
+  { name: 'Pippa',   skill: 0.72, lineOffset:  24,  cornerCaution: 0.40, lookahead: 78 },
+  { name: 'Oso',     skill: 0.60, lineOffset: -10,  cornerCaution: 0.65, lookahead: 92 },
+  { name: 'Verity',  skill: 0.74, lineOffset:  14,  cornerCaution: 0.50, lookahead: 84 }
+];
+
 export class RacingGame extends Scene {
-  constructor({ humans = 1, aiCount = 3, track = countryside } = {}) {
+  constructor({ humans = 1, aiCount = 3, track = countryside, useSplit = false } = {}) {
     super();
     this.humansRequested = Math.max(1, Math.min(2, humans));
     this.aiCount = aiCount;
     this.trackData = track;
+    this.useSplit = useSplit;
   }
 
   async init() {
@@ -56,10 +70,9 @@ export class RacingGame extends Scene {
     this.humanPlayers = [];
     this.aiDrivers = [];
     this.engineSounds = [];
-    this.state = 'countdown'; // countdown -> racing -> finished
+    this.state = 'countdown';
     this.countdown = 3.999;
     this.elapsed = 0;
-    this.cameraSnap = true;
 
     // Build player input bindings.
     const p1 = ctx.input.createPlayer({
@@ -77,53 +90,56 @@ export class RacingGame extends Scene {
       this.humanPlayers.push(p2);
     }
 
-    // Spawn vehicles in starting grid order: humans first, then AI.
+    // Spawn vehicles on the starting grid: humans first, then AI.
     const grid = this.track.startGrid;
     let slot = 0;
     for (let i = 0; i < this.humanPlayers.length; i++) {
       const g = grid[slot++];
-      const v = new Vehicle({
+      this.vehicles.push(new Vehicle({
         x: g.x, y: g.y, angle: g.angle,
         color: VEHICLE_COLORS[i % VEHICLE_COLORS.length],
         name: `P${i + 1}`,
         isHuman: true
-      });
-      this.vehicles.push(v);
+      }));
     }
     for (let i = 0; i < this.aiCount; i++) {
       const g = grid[slot++ % grid.length];
+      const personality = AI_PERSONALITIES[i % AI_PERSONALITIES.length];
       const color = VEHICLE_COLORS[(this.humanPlayers.length + i) % VEHICLE_COLORS.length];
       const v = new Vehicle({
         x: g.x, y: g.y, angle: g.angle,
         color,
-        name: `CPU${i + 1}`,
+        name: personality.name,
         isHuman: false
       });
       this.vehicles.push(v);
-      this.aiDrivers.push(new AIDriver({ vehicle: v, track: this.track, skill: 0.55 + i * 0.08 }));
+      this.aiDrivers.push(new AIDriver({
+        vehicle: v,
+        track: this.track,
+        skill: personality.skill,
+        lineOffset: personality.lineOffset,
+        lookahead: personality.lookahead,
+        cornerCaution: personality.cornerCaution
+      }));
     }
 
-    // Engine sounds: one per human only (avoid noise spam).
-    for (const _ of this.humanPlayers) {
-      this.engineSounds.push(ctx.audio.engineLoop());
-    }
+    // Engine drone for human cars only.
+    for (const _ of this.humanPlayers) this.engineSounds.push(ctx.audio.engineLoop());
 
-    // Camera setup.
+    // Camera: fit the entire track in one viewport.
     ctx.renderer.camera.setBounds(this.track.bounds);
-    ctx.renderer.camera.setZoom(0.9);
+    this._refitCamera();
 
     // HUD.
     this.hud = new HUD(ctx.hudRoot);
     if (this.humanPlayers.length === 1) {
-      this.hud.ensure('p1', { position: { top: '12px', left: '12px' } });
+      this.hud.ensure('p1', { position: { top: '12px', right: '12px' } });
     } else {
-      this.hud.ensure('p1', { position: { top: '12px', left: '12px' } });
+      this.hud.ensure('p1', { position: { top: '12px', left: '64px' } });
       this.hud.ensure('p2', { position: { top: '12px', right: '12px' } });
     }
 
-    // Pause overlay state.
     this.paused = false;
-
     this._renderCountdownOverlay();
   }
 
@@ -140,9 +156,17 @@ export class RacingGame extends Scene {
     }
   }
 
+  _refitCamera() {
+    const cam = this.ctx.renderer.camera;
+    cam.setViewport(this.ctx.renderer.width, this.ctx.renderer.height);
+    cam.fitToBounds(this.track.bounds, 0);
+  }
+
   // --- Update loop ---
   update(dt) {
     if (this.paused) return;
+    // Re-fit camera if the canvas has resized since last frame.
+    this._refitCamera();
 
     if (this.state === 'countdown') {
       this.countdown -= dt;
@@ -154,7 +178,6 @@ export class RacingGame extends Scene {
         this._clearOverlay();
         this.ctx.audio.beep({ freq: 880, duration: 0.18 });
       } else {
-        // Cars locked at start.
         for (const v of this.vehicles) v.setControl({ steer: 0, throttle: 0 });
         this._integrateAll(dt);
         return;
@@ -163,19 +186,20 @@ export class RacingGame extends Scene {
 
     if (this.state === 'racing') this.elapsed += dt;
 
-    // Apply human input.
+    // Human input.
     for (let i = 0; i < this.humanPlayers.length; i++) {
       const p = this.humanPlayers[i];
       const v = this.vehicles[i];
       const accel = p.isDown('accelerate') ? 1 : 0;
       const brake = p.isDown('brake') ? 1 : 0;
-      const throttle = accel - brake;
-      const steer = p.axis('steer');
-      v.setControl({ steer, throttle, handbrake: p.isDown('handbrake') });
+      v.setControl({
+        steer: p.axis('steer'),
+        throttle: accel - brake,
+        handbrake: p.isDown('handbrake')
+      });
       if (p.justPressed('pause')) this.togglePause();
     }
 
-    // AI input.
     for (const ai of this.aiDrivers) ai.update(dt);
 
     this._integrateAll(dt);
@@ -184,18 +208,6 @@ export class RacingGame extends Scene {
     this._updateHUD();
     this._updateAudio();
 
-    // Camera follow.
-    if (this.humanPlayers.length === 1) {
-      const v = this.vehicles[0];
-      if (this.cameraSnap) { this.ctx.renderer.camera.snapTo(v.body.x, v.body.y); this.cameraSnap = false; }
-      else this.ctx.renderer.camera.follow(v.body.x, v.body.y);
-    } else {
-      // 2-player: frame midpoint between the two cars; we'll handle split-screen at render time.
-      // For shared single-camera fallback, center on midpoint with zoom-out.
-      // (Render path uses two viewports; this branch is unused there.)
-    }
-
-    // Finish detection.
     const allHumansDone = this.humanPlayers.every((_, i) => this.vehicles[i].finished);
     if (this.state === 'racing' && allHumansDone) {
       this.state = 'finished';
@@ -205,7 +217,6 @@ export class RacingGame extends Scene {
 
   _integrateAll(dt) {
     for (const v of this.vehicles) v.update(dt, this.track);
-    // Pairwise collision between vehicles (cheap N^2; N is small).
     for (let i = 0; i < this.vehicles.length; i++) {
       for (let j = i + 1; j < this.vehicles.length; j++) {
         resolveCircles(this.vehicles[i].body, this.vehicles[j].body, 0.25);
@@ -218,13 +229,8 @@ export class RacingGame extends Scene {
     const total = this.track.centerline.length;
     for (const v of this.vehicles) {
       if (v.finished) continue;
-      // Track lap when the seg index wraps from near-end to near-start.
       if (v._lastSeg == null) { v._lastSeg = v.segIndex; continue; }
-      const wentForward = (v.segIndex - v._lastSeg + total) % total;
-      if (wentForward > total / 2) {
-        // Wrapped backward, ignore.
-      } else if (v._lastSeg > total - 6 && v.segIndex < 6) {
-        // crossed start/finish.
+      if (v._lastSeg > total - 6 && v.segIndex < 6) {
         const lapTime = this.elapsed - v.lastLapStart;
         if (v.lap > 0 && lapTime < v.bestLapTime) v.bestLapTime = lapTime;
         v.lastLapStart = this.elapsed;
@@ -241,7 +247,6 @@ export class RacingGame extends Scene {
   }
 
   _updateRanking() {
-    // Sort by progress descending; finished cars rank by finishTime ascending.
     const byProgress = this.vehicles.slice().sort((a, b) => {
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       if (a.finished) return -1;
@@ -280,18 +285,27 @@ export class RacingGame extends Scene {
   // --- Render ---
   render(renderer) {
     renderer.clear('#1a1f1a');
-    if (this.humanPlayers.length === 1) {
-      this._renderViewport(renderer, this.vehicles[0], 0, 0, renderer.width, renderer.height);
+    if (!this.useSplit) {
+      this._renderShared(renderer);
     } else {
+      // Split-screen path is preserved for future tracks that don't fit one
+      // viewport; not used while the active track fits the screen.
       const half = renderer.width / 2;
       this._renderViewport(renderer, this.vehicles[0], 0, 0, half, renderer.height);
-      this._renderViewport(renderer, this.vehicles[1], half, 0, renderer.width - half, renderer.height);
-      // Split divider.
+      this._renderViewport(renderer, this.vehicles[1] || this.vehicles[0],
+        half, 0, renderer.width - half, renderer.height);
       renderer.pushScreen();
       renderer.ctx.fillStyle = '#0c0f14';
       renderer.ctx.fillRect(half - 1, 0, 2, renderer.height);
       renderer.popScreen();
     }
+  }
+
+  _renderShared(renderer) {
+    renderer.pushWorld();
+    this.track.draw(renderer);
+    for (const v of this.vehicles) v.draw(renderer.ctx);
+    renderer.popWorld();
   }
 
   _renderViewport(renderer, follow, x, y, w, h) {
@@ -301,7 +315,6 @@ export class RacingGame extends Scene {
     cam.follow(follow.body.x, follow.body.y);
 
     c.save();
-    // Scissor rect (no actual clip API, but setTransform isolates).
     c.beginPath();
     c.rect(x, y, w, h);
     c.clip();
@@ -310,7 +323,6 @@ export class RacingGame extends Scene {
     c.scale(cam.zoom, cam.zoom);
     c.translate(-cam.x, -cam.y);
 
-    // World draws.
     this.track.draw(renderer);
     for (const v of this.vehicles) v.draw(c);
 
@@ -327,9 +339,9 @@ export class RacingGame extends Scene {
     root.replaceChildren();
     const card = document.createElement('div');
     card.className = 'overlay-card';
-    card.innerHTML = `<h2 style="font-size:64px;margin:0;">${text}</h2>`;
     card.style.background = 'transparent';
     card.style.border = '0';
+    card.innerHTML = `<h2 style="font-size:64px;margin:0;">${text}</h2>`;
     root.appendChild(card);
   }
   _clearOverlay() {

@@ -3,11 +3,14 @@
 // Construction takes a small list of control points (the "spine" of the loop)
 // and generates a dense centerline by Catmull-Rom interpolation. The centerline
 // drives both rendering (we draw a thick stroke) and gameplay (cars query the
-// track to find their nearest segment, off-track distance, and lap progress).
+// track to find their nearest segment, off-track distance, lap progress, and
+// curvature ahead).
 //
-// Closed loop only — first/last points are connected.
+// Decorations (trees, hay bales) are scattered along both edges from a
+// deterministic seed so the layout is identical for everyone.
 
-import { TAU, dist, distToSegment } from '../../engine/utils/math.js';
+import { distToSegment } from '../../engine/utils/math.js';
+import { createRng, range } from '../../engine/utils/rng.js';
 
 const SUBDIVISIONS_PER_SEGMENT = 14;
 
@@ -18,7 +21,14 @@ function catmullRom(p0, p1, p2, p3, t) {
 }
 
 export class Track {
-  constructor({ name, controlPoints, halfWidth = 90, laps = 3 }) {
+  constructor({
+    name,
+    controlPoints,
+    halfWidth = 70,
+    laps = 3,
+    decorationDensity = 0.5,
+    decorationSeed = 1
+  }) {
     this.name = name;
     this.halfWidth = halfWidth;
     this.totalLaps = laps;
@@ -72,12 +82,14 @@ export class Track {
     const t = this.segTangent[startSeg];
     this.startAngle = Math.atan2(t.y, t.x);
     const start = cl[startSeg];
-    // Move 30 units back along the tangent so cars cross the line on lap start.
     this.startX = start.x - t.x * 30;
     this.startY = start.y - t.y * 30;
 
-    // Cached starting grid: 4 staggered slots in two rows.
+    // Cached starting grid: 8 staggered slots in two columns.
     this.startGrid = this._buildStartGrid(8);
+
+    // Decorations (deterministic).
+    this.decorations = this._buildDecorations(decorationDensity, decorationSeed);
   }
 
   _buildStartGrid(slots) {
@@ -91,16 +103,47 @@ export class Track {
       const side = i % 2 === 0 ? -1 : 1;
       const ox = -t.x * (40 + row * 50);
       const oy = -t.y * (40 + row * 50);
-      const lx = nx * side * 22;
-      const ly = ny * side * 22;
+      const lx = nx * side * 20;
+      const ly = ny * side * 20;
       grid.push({ x: start.x + ox + lx, y: start.y + oy + ly, angle: this.startAngle });
     }
     return grid;
   }
 
+  _buildDecorations(density, seed) {
+    if (density <= 0) return [];
+    const rng = createRng(seed);
+    const out = [];
+    const cl = this.centerline;
+    // Step along the centerline at fixed cadence; density is the per-side
+    // placement probability, not the spacing.
+    const step = 4;
+    for (let i = 0; i < cl.length; i += step) {
+      const a = cl[i];
+      const t = this.segTangent[i];
+      // Skip placing decorations near the start/finish line.
+      if (i < 4 || i > cl.length - 4) continue;
+      for (const side of [-1, 1]) {
+        if (rng() > density) continue;
+        const dist = this.halfWidth + 18 + range(rng, 0, 60);
+        const jitterAlong = range(rng, -10, 10);
+        const px = a.x + t.x * jitterAlong + (-t.y) * side * dist;
+        const py = a.y + t.y * jitterAlong + (t.x) * side * dist;
+        // Choose decoration type.
+        const r = rng();
+        if (r < 0.78) {
+          out.push({ type: 'tree', x: px, y: py, r: 9 + range(rng, 0, 5), shade: range(rng, 0.85, 1.15) });
+        } else if (r < 0.92) {
+          out.push({ type: 'hay', x: px, y: py, w: 18, h: 12, angle: range(rng, -0.3, 0.3) });
+        } else {
+          out.push({ type: 'rock', x: px, y: py, r: 6 + range(rng, 0, 4) });
+        }
+      }
+    }
+    return out;
+  }
+
   // Find the nearest segment to (x, y), starting search around `aroundIdx`.
-  // Returns { segIndex, t, distance, ahead } where t is parameter along that
-  // segment [0..1] and `ahead` is the signed forward progress in world units.
   project(x, y, aroundIdx = 0, window = 24) {
     const cl = this.centerline;
     const n = cl.length;
@@ -115,7 +158,6 @@ export class Track {
       if (d < bestD) {
         bestD = d;
         bestI = i;
-        // Project to get t.
         const dx = b.x - a.x, dy = b.y - a.y;
         const len2 = dx * dx + dy * dy;
         bestT = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2));
@@ -125,7 +167,9 @@ export class Track {
   }
 
   // Returns the point `lookahead` units forward of (segIndex, t).
-  lookAhead(segIndex, t, distance) {
+  // If `lateralOffset` is set, the point is shifted by that many units
+  // perpendicular to the local tangent (positive = right of travel).
+  lookAhead(segIndex, t, distance, lateralOffset = 0) {
     let i = segIndex;
     let remain = distance + this.segLen[i] * (1 - t);
     while (remain > this.segLen[i]) {
@@ -135,7 +179,18 @@ export class Track {
     const a = this.centerline[i];
     const b = this.centerline[(i + 1) % this.centerline.length];
     const tt = remain / (this.segLen[i] || 1);
-    return { x: a.x + (b.x - a.x) * tt, y: a.y + (b.y - a.y) * tt, segIndex: i, t: tt };
+    const px = a.x + (b.x - a.x) * tt;
+    const py = a.y + (b.y - a.y) * tt;
+    if (lateralOffset === 0) return { x: px, y: py, segIndex: i, t: tt };
+    const tan = this.segTangent[i];
+    const nx = -tan.y;
+    const ny = tan.x;
+    return {
+      x: px + nx * lateralOffset,
+      y: py + ny * lateralOffset,
+      segIndex: i,
+      t: tt
+    };
   }
 
   // Estimate curvature ahead — magnitude of tangent change in the next `count`
@@ -149,7 +204,7 @@ export class Track {
       const dot = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y));
       acc += Math.acos(dot);
     }
-    return acc; // radians of total turn over `count` segments
+    return acc;
   }
 
   draw(renderer) {
@@ -157,14 +212,36 @@ export class Track {
     const cl = this.centerline;
 
     // Grass background — large rect tied to bounds.
-    ctx.fillStyle = '#274d2e';
+    ctx.fillStyle = '#2d5a35';
     ctx.fillRect(this.bounds.minX, this.bounds.minY,
       this.bounds.maxX - this.bounds.minX,
       this.bounds.maxY - this.bounds.minY);
 
-    // Track surface: thick stroke along the centerline.
+    // Soft grass texture: a few tonal bands.
+    ctx.fillStyle = 'rgba(255,255,255,0.025)';
+    for (let yy = this.bounds.minY; yy < this.bounds.maxY; yy += 26) {
+      ctx.fillRect(this.bounds.minX, yy, this.bounds.maxX - this.bounds.minX, 4);
+    }
+
+    // Curb (red/white, slightly wider than the asphalt).
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    ctx.lineWidth = this.halfWidth * 2 + 8;
+    ctx.strokeStyle = '#c83b3b';
+    ctx.beginPath();
+    ctx.moveTo(cl[0].x, cl[0].y);
+    for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    // White curb stripe (overlaid dashed on top of red).
+    ctx.lineWidth = this.halfWidth * 2 + 6;
+    ctx.strokeStyle = '#ffffff';
+    ctx.setLineDash([16, 16]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Asphalt.
     ctx.lineWidth = this.halfWidth * 2;
     ctx.strokeStyle = '#3a3f48';
     ctx.beginPath();
@@ -173,15 +250,15 @@ export class Track {
     ctx.closePath();
     ctx.stroke();
 
-    // Curb edges (subtle inner stripe).
-    ctx.lineWidth = this.halfWidth * 2 - 6;
+    // Inner shading.
+    ctx.lineWidth = this.halfWidth * 2 - 4;
     ctx.strokeStyle = '#454a55';
     ctx.stroke();
 
     // Centerline dashes.
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(255, 220, 90, 0.6)';
-    ctx.setLineDash([18, 22]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255, 220, 90, 0.55)';
+    ctx.setLineDash([16, 22]);
     ctx.beginPath();
     ctx.moveTo(cl[0].x, cl[0].y);
     for (let i = 1; i < cl.length; i++) ctx.lineTo(cl[i].x, cl[i].y);
@@ -189,23 +266,76 @@ export class Track {
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // Decorations (drawn before the start line so the line is on top).
+    for (const d of this.decorations) this._drawDecoration(ctx, d);
+
     // Start/finish line: a thick checkered band perpendicular to seg 0 tangent.
     const t = this.segTangent[0];
     const a = this.centerline[0];
-    const nx = -t.y, ny = t.x;
-    const w = this.halfWidth;
     ctx.save();
     ctx.translate(a.x, a.y);
     ctx.rotate(Math.atan2(t.y, t.x));
-    const lineLen = 12;
-    for (let i = -8; i < 8; i++) {
+    const lineLen = 14;
+    const w = this.halfWidth;
+    const cells = 12;
+    const cellH = (w * 2) / cells;
+    for (let i = 0; i < cells; i++) {
       ctx.fillStyle = i % 2 === 0 ? '#fff' : '#1a1a1a';
-      ctx.fillRect(-lineLen / 2, -w + (i + 8) * (w * 2 / 16), lineLen, w * 2 / 16);
+      ctx.fillRect(-lineLen / 2, -w + i * cellH, lineLen, cellH);
     }
     ctx.restore();
+  }
 
-    // Track bounding box outline (debug aesthetic).
-    void TAU;
+  _drawDecoration(ctx, d) {
+    if (d.type === 'tree') {
+      // Shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(d.x + 2, d.y + 3, d.r * 1.05, d.r * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Foliage
+      const g = '#1f6b2a';
+      ctx.fillStyle = d.shade > 1 ? '#2a8038' : g;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+      // Highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath();
+      ctx.arc(d.x - d.r * 0.35, d.y - d.r * 0.35, d.r * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.type === 'hay') {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.angle);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(-d.w / 2 + 2, -d.h / 2 + 3, d.w, d.h);
+      ctx.fillStyle = '#caa44b';
+      ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i++) {
+        const lx = -d.w / 2 + (i * d.w) / 4;
+        ctx.beginPath();
+        ctx.moveTo(lx, -d.h / 2);
+        ctx.lineTo(lx, d.h / 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (d.type === 'rock') {
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(d.x + 2, d.y + 3, d.r * 1.1, d.r * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7a8189';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.arc(d.x - d.r * 0.3, d.y - d.r * 0.3, d.r * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   isOffTrack(distance) { return distance > this.halfWidth - 6; }
