@@ -108,19 +108,25 @@ export class RaceWizard {
 
   // ---------- Step 1: player count ----------
   _step1Count() {
-    return this._renderStep('Players', 'Choose how many humans are racing.', (card, resolve) => {
+    return this._renderStep('Players', 'Choose how many humans are racing. 2+ players uses split-screen.', (card, resolve) => {
       const grid = document.createElement('div');
-      grid.className = 'wizard-choices';
-      for (const n of [1, 2]) {
+      grid.className = 'wizard-choices wizard-choices-4';
+      const labels = { 1: 'Solo', 2: 'Versus', 3: '3 Players', 4: '4 Players' };
+      for (const n of [1, 2, 3, 4]) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'wizard-choice';
-        btn.innerHTML = `<span class="big">${n}</span><span>${n === 1 ? 'Solo' : 'Local versus'}</span>`;
+        btn.innerHTML = `<span class="big">${n}</span><span>${labels[n]}</span>`;
         btn.addEventListener('click', () => resolve(n));
         grid.appendChild(btn);
       }
       card.appendChild(grid);
-      this._addStepNav(card, { back: null });
+      const note = document.createElement('p');
+      note.style.color = 'var(--muted)';
+      note.style.fontSize = '12px';
+      note.style.marginTop = '14px';
+      note.textContent = 'Up to 2 keyboard players (Arrows + Space, WASD + Shift). Players 3-4 need gamepads.';
+      card.appendChild(note);
     });
   }
 

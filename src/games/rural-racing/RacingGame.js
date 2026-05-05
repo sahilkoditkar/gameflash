@@ -13,6 +13,7 @@ import { AIDriver } from './AIDriver.js';
 import { HUD } from './HUD.js';
 import { SkidLayer } from './SkidLayer.js';
 import { Haptics } from './Haptics.js';
+import { Camera } from '../../engine/render/Camera.js';
 import { resolveCircles } from '../../engine/physics/Collision.js';
 import {
   RaceWizard, COLORS, DIFFICULTY, WEATHER, TIME_OF_DAY,
@@ -25,6 +26,31 @@ import { Championship, AI_DRIVER_NAMES } from './Championship.js';
 const AI_LINE_OFFSETS = [0, -22, 24, -10, 14, -18, 20, -8];
 const SKID_LATERAL_THRESHOLD = 70;       // |lateral speed| above this leaves marks
 const COLLISION_RUMBLE_THRESHOLD = 80;   // relative velocity for a strong rumble
+const FOLLOW_ZOOM = 1.4;                 // per-player follow camera zoom
+
+// 1-4 player split-screen layout. Returns viewport rectangles (CSS-pixel
+// coordinates) inside the canvas. 1=full, 2=L|R, 3=top L|R + bottom-left,
+// 4=2x2.
+function viewportLayout(playerCount, w, h) {
+  if (playerCount <= 1) return [{ x: 0, y: 0, w, h }];
+  const halfW = w / 2;
+  const halfH = h / 2;
+  if (playerCount === 2) return [
+    { x: 0,     y: 0, w: halfW, h },
+    { x: halfW, y: 0, w: halfW, h }
+  ];
+  if (playerCount === 3) return [
+    { x: 0,     y: 0,     w: halfW, h: halfH },
+    { x: halfW, y: 0,     w: halfW, h: halfH },
+    { x: 0,     y: halfH, w: halfW, h: halfH }
+  ];
+  return [
+    { x: 0,     y: 0,     w: halfW, h: halfH },
+    { x: halfW, y: 0,     w: halfW, h: halfH },
+    { x: 0,     y: halfH, w: halfW, h: halfH },
+    { x: halfW, y: halfH, w: halfW, h: halfH }
+  ];
+}
 
 function aiColors(usedHexes) {
   return COLORS.map((c) => c.hex).filter((h) => !usedHexes.has(h));
@@ -33,7 +59,8 @@ function aiColors(usedHexes) {
 export class RacingGame extends Scene {
   constructor(opts = {}) {
     super();
-    this.mode = opts.mode || 'race';
+    // mode is null on first launch — the player picks one in-game.
+    this.mode = opts.mode || null;
     this.preset = opts.config || null;       // skip wizard if supplied
     this.config = null;
     this.championship = opts.championship || null;
@@ -42,6 +69,16 @@ export class RacingGame extends Scene {
   async init() {
     const ctx = this.ctx;
     ctx.canvas.focus({ preventScroll: true });
+
+    // Step 0: pick a mode if not preset.
+    if (!this.mode) {
+      const chosen = await this._pickMode();
+      if (!chosen) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape' }));
+        return;
+      }
+      this.mode = chosen;
+    }
 
     if (!this.config) {
       this.config = await this._setupForMode();
@@ -140,15 +177,50 @@ export class RacingGame extends Scene {
 
     for (const _ of this.humanPlayers) this.engineSounds.push(ctx.audio.engineLoop());
 
-    ctx.renderer.camera.setBounds(this.track.bounds);
-    this._refitCamera();
+    // One follow camera per human player. Each is bounded by the track and
+    // snaps to the player's start position on the first frame.
+    this._playerCameras = [];
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      const cam = new Camera();
+      cam.setZoom(FOLLOW_ZOOM);
+      cam.setBounds(this.track.bounds);
+      cam.smoothness = 0.22;
+      cam.snapTo(this.vehicles[i].body.x, this.vehicles[i].body.y);
+      this._playerCameras.push(cam);
+    }
+
+    // Pre-compute mini-map projections for every panel size we might use.
+    // Each entry is keyed by viewport width (4-player splits get a smaller
+    // minimap than full-screen so it doesn't crowd the view).
+    this._minimaps = new Map();
 
     this.hud = new HUD(ctx.hudRoot);
-    this.hud.ensure('p1', { position: { top: '12px', right: '12px' } });
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      this.hud.ensure(`p${i + 1}`);
+    }
+    this._lastViewportSig = '';
+    this._positionHuds();
     if (this.mode === 'timetrial') this._buildTtHud();
     if (this.mode === 'career') this._buildCareerHud();
 
     this._renderCountdownOverlay();
+  }
+
+  _positionHuds() {
+    const w = this.ctx.renderer.width;
+    const h = this.ctx.renderer.height;
+    const sig = `${this.humanPlayers.length}|${w}|${h}`;
+    if (sig === this._lastViewportSig) return;
+    this._lastViewportSig = sig;
+    const layout = viewportLayout(this.humanPlayers.length, w, h);
+    for (let i = 0; i < this.humanPlayers.length; i++) {
+      const vp = layout[i];
+      // Position relative to the canvas (HUD root sits over the canvas).
+      this.hud.setPosition(`p${i + 1}`, {
+        top: `${vp.y + 12}px`,
+        left: `${vp.x + 12}px`
+      });
+    }
   }
 
   // ---------- mode-specific setup ----------
@@ -161,6 +233,56 @@ export class RacingGame extends Scene {
     if (this.mode === 'timetrial') return this._timeTrialSetup();
     if (this.mode === 'career') return this._careerSetup();
     return null;
+  }
+
+  // First step shown after the player launches Rural Racing — choose
+  // between Quick Race, Time Trial and Career. Resolves with the mode id
+  // or null on Esc.
+  _pickMode() {
+    return new Promise((resolve) => {
+      const root = this.ctx.overlayRoot;
+      root.hidden = false;
+      root.replaceChildren();
+      const card = document.createElement('div');
+      card.className = 'overlay-card wizard-card';
+      const modes = [
+        { id: 'race',      title: 'Quick Race',  blurb: '1-4 players + AI. Tune difficulty, weather, time of day, lap count. Restart with R / N.' },
+        { id: 'timetrial', title: 'Time Trial',  blurb: 'Solo hot-laps. Sectors + persistent personal best + ghost car of your fastest lap.' },
+        { id: 'career',    title: 'Career',      blurb: '9-race championship across every circuit. F1 points scoring; standings persist across sessions.' }
+      ];
+      const h = document.createElement('h2');
+      h.textContent = 'Choose mode';
+      const p = document.createElement('p');
+      p.textContent = 'Pick how you want to race. Esc returns to the launcher.';
+      card.append(h, p);
+      const list = document.createElement('div');
+      list.className = 'mode-choices';
+      let resolved = false;
+      const cleanup = () => {
+        resolved = true;
+        window.removeEventListener('keydown', onEsc);
+        root.replaceChildren();
+        root.hidden = true;
+      };
+      const onEsc = (e) => { if (e.code === 'Escape' && !resolved) { cleanup(); resolve(null); } };
+      window.addEventListener('keydown', onEsc);
+
+      for (const m of modes) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mode-choice';
+        const title = document.createElement('span');
+        title.className = 'big';
+        title.textContent = m.title;
+        const blurb = document.createElement('span');
+        blurb.textContent = m.blurb;
+        btn.append(title, blurb);
+        btn.addEventListener('click', () => { cleanup(); resolve(m.id); });
+        list.appendChild(btn);
+      }
+      card.appendChild(list);
+      root.appendChild(card);
+    });
   }
 
   async _timeTrialSetup() {
@@ -277,16 +399,10 @@ export class RacingGame extends Scene {
     return this._render(renderer);
   }
 
-  _refitCamera() {
-    const cam = this.ctx.renderer.camera;
-    cam.setViewport(this.ctx.renderer.width, this.ctx.renderer.height);
-    cam.fitToBounds(this.track.bounds, 0);
-  }
-
   // --- Update loop ---
   _update(dt) {
     if (this.paused) return;
-    this._refitCamera();
+    this._positionHuds();
 
     if (this.state === 'countdown') {
       this.countdown -= dt;
@@ -307,21 +423,34 @@ export class RacingGame extends Scene {
 
     if (this.state === 'racing') this.elapsed += dt;
 
-    // Human input.
+    // Human input. A finished car is parked — controls are ignored so the
+    // player just watches the rest of the field cross the line. Pause still
+    // works.
     for (let i = 0; i < this.humanPlayers.length; i++) {
       const p = this.humanPlayers[i];
       const v = this.vehicles[i];
-      const accel = p.isDown('accelerate') ? 1 : 0;
-      const brake = p.isDown('brake') ? 1 : 0;
-      v.setControl({
-        steer: p.axis('steer'),
-        throttle: accel - brake,
-        handbrake: p.isDown('handbrake')
-      });
+      if (v.finished) {
+        v.setControl({ steer: 0, throttle: 0, handbrake: true });
+      } else {
+        const accel = p.isDown('accelerate') ? 1 : 0;
+        const brake = p.isDown('brake') ? 1 : 0;
+        v.setControl({
+          steer: p.axis('steer'),
+          throttle: accel - brake,
+          handbrake: p.isDown('handbrake')
+        });
+      }
       if (p.justPressed('pause')) this.togglePause();
     }
 
-    for (const ai of this.aiDrivers) ai.update(dt);
+    // AI cars also park once they finish — they no longer steer.
+    for (const ai of this.aiDrivers) {
+      if (ai.vehicle.finished) {
+        ai.vehicle.setControl({ steer: 0, throttle: 0, handbrake: true });
+      } else {
+        ai.update(dt);
+      }
+    }
 
     this._integrateAll(dt);
     this._emitSkidMarks();
@@ -576,37 +705,246 @@ export class RacingGame extends Scene {
   // --- Render ---
   _render(renderer) {
     renderer.clear('#1a1f1a');
-    renderer.pushWorld();
-    this.track.draw(renderer);
-    this.skids.draw(renderer.ctx);
-    this._renderGhost(renderer);
-    for (const v of this.vehicles) v.draw(renderer.ctx);
-    renderer.popWorld();
+    const layout = viewportLayout(this.humanPlayers.length, renderer.width, renderer.height);
+    for (let i = 0; i < layout.length; i++) {
+      this._renderViewport(renderer, layout[i], i);
+    }
+    // 3-player mode: render the stats panel in the empty 4th cell.
+    if (this.humanPlayers.length === 3) {
+      const halfW = renderer.width / 2;
+      const halfH = renderer.height / 2;
+      this._renderStatsPanel(renderer, { x: halfW, y: halfH, w: halfW, h: halfH });
+    }
+    if (this.humanPlayers.length >= 2) this._drawSplitDividers(renderer, layout);
+    if (this.mode === 'timetrial') this._renderTtHud();
+  }
 
+  _renderViewport(renderer, vp, playerIdx) {
+    const ctx = renderer.ctx;
+    const cam = this._playerCameras[playerIdx];
+    cam.setViewport(vp.w, vp.h);
+    cam.follow(this.vehicles[playerIdx].body.x, this.vehicles[playerIdx].body.y);
+
+    // Clip to viewport, apply camera transform, draw the world.
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+    ctx.beginPath();
+    ctx.rect(vp.x, vp.y, vp.w, vp.h);
+    ctx.clip();
+    ctx.translate(vp.x + vp.w / 2, vp.y + vp.h / 2);
+    ctx.scale(cam.zoom, cam.zoom);
+    ctx.translate(-cam.x, -cam.y);
+
+    this.track.draw(renderer);
+    this.skids.draw(ctx);
+    this._renderGhost(renderer);
+    for (const v of this.vehicles) v.draw(ctx);
+
+    ctx.restore();
+
+    // Per-viewport screen-space overlays.
+    this._renderScreenEffects(renderer, vp);
+    this._drawMinimap(renderer, vp, playerIdx);
+  }
+
+  _renderScreenEffects(renderer, vp) {
+    const ctx = renderer.ctx;
     if (this.timeDef?.tint) {
-      renderer.pushScreen();
-      renderer.ctx.fillStyle = this.timeDef.tint;
-      renderer.ctx.fillRect(0, 0, renderer.width, renderer.height);
-      renderer.popScreen();
+      ctx.save();
+      ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+      ctx.fillStyle = this.timeDef.tint;
+      ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
+      ctx.restore();
     }
     if (this.config?.options.weather === 'rain') {
-      renderer.pushScreen();
-      const c = renderer.ctx;
-      c.strokeStyle = 'rgba(180, 210, 240, 0.35)';
-      c.lineWidth = 1;
+      ctx.save();
+      ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+      ctx.beginPath();
+      ctx.rect(vp.x, vp.y, vp.w, vp.h);
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(180, 210, 240, 0.35)';
+      ctx.lineWidth = 1;
       const t = this.elapsed * 1000;
-      for (let i = 0; i < 90; i++) {
-        const x = ((i * 137 + t * 0.6) % (renderer.width + 80)) - 40;
-        const y = ((i * 91  + t * 0.9) % (renderer.height + 60)) - 30;
-        c.beginPath();
-        c.moveTo(x, y);
-        c.lineTo(x - 6, y + 14);
-        c.stroke();
+      for (let i = 0; i < 70; i++) {
+        const x = vp.x + ((i * 137 + t * 0.6) % (vp.w + 80)) - 40;
+        const y = vp.y + ((i * 91  + t * 0.9) % (vp.h + 60)) - 30;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - 6, y + 14);
+        ctx.stroke();
       }
-      renderer.popScreen();
+      ctx.restore();
     }
+  }
 
-    if (this.mode === 'timetrial') this._renderTtHud();
+  _drawSplitDividers(renderer, layout) {
+    const ctx = renderer.ctx;
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+    ctx.fillStyle = '#0c0f14';
+    const n = layout.length;
+    if (n === 2) {
+      ctx.fillRect(renderer.width / 2 - 1, 0, 2, renderer.height);
+    } else if (n >= 3) {
+      ctx.fillRect(renderer.width / 2 - 1, 0, 2, renderer.height);
+      ctx.fillRect(0, renderer.height / 2 - 1, renderer.width, 2);
+    }
+    ctx.restore();
+  }
+
+  // Build a Path2D + projection from the track's centerline so each frame's
+  // mini-map draw is just a stroke + N filled circles.
+  _buildMinimap(W, H) {
+    const PAD = 10;
+    const b = this.track.bounds;
+    const tw = b.maxX - b.minX;
+    const th = b.maxY - b.minY;
+    const scale = Math.min((W - PAD * 2) / tw, (H - PAD * 2) / th);
+    const ox = PAD + (W - PAD * 2 - tw * scale) / 2 - b.minX * scale;
+    const oy = PAD + (H - PAD * 2 - th * scale) / 2 - b.minY * scale;
+
+    const path = new Path2D();
+    const cl = this.track.centerline;
+    for (let i = 0; i < cl.length; i++) {
+      const px = ox + cl[i].x * scale;
+      const py = oy + cl[i].y * scale;
+      if (i === 0) path.moveTo(px, py);
+      else path.lineTo(px, py);
+    }
+    path.closePath();
+    return { w: W, h: H, scale, ox, oy, path };
+  }
+
+  _drawMinimap(renderer, vp, playerIdx) {
+    const ctx = renderer.ctx;
+    // Choose mini-map size relative to viewport so it stays unobtrusive.
+    const W = Math.max(110, Math.min(180, Math.round(vp.w * 0.22)));
+    const H = Math.round(W * 2 / 3);
+    let m = this._minimaps.get(W);
+    if (!m) { m = this._buildMinimap(W, H); this._minimaps.set(W, m); }
+    // Top-right corner of the viewport.
+    const x = vp.x + vp.w - m.w - 12;
+    const y = vp.y + 12;
+
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+
+    // Panel background.
+    ctx.fillStyle = 'rgba(12, 15, 20, 0.6)';
+    ctx.fillRect(x, y, m.w, m.h);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, m.w - 1, m.h - 1);
+
+    // Track centerline (cached path) translated into the panel.
+    ctx.translate(x, y);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke(m.path);
+    // Start/finish marker.
+    const start = this.track.centerline[0];
+    ctx.fillStyle = '#ffcc33';
+    ctx.beginPath();
+    ctx.arc(m.ox + start.x * m.scale, m.oy + start.y * m.scale, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cars as colour-coded dots; the viewing player's own car gets a ring.
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      const px = m.ox + v.body.x * m.scale;
+      const py = m.oy + v.body.y * m.scale;
+      ctx.fillStyle = v.color;
+      ctx.beginPath();
+      ctx.arc(px, py, i === playerIdx ? 3.5 : 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      if (i === playerIdx) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Stats / leaderboard panel rendered in the empty quadrant of a 3-player
+  // 2x2 split so every quadrant is filled.
+  _renderStatsPanel(renderer, vp) {
+    const ctx = renderer.ctx;
+    ctx.save();
+    ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
+
+    // Background.
+    ctx.fillStyle = '#0c0f14';
+    ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
+    // Subtle inner border.
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(vp.x + 0.5, vp.y + 0.5, vp.w - 1, vp.h - 1);
+
+    // Header.
+    const px = vp.x + 24;
+    let py = vp.y + 32;
+    ctx.fillStyle = '#ffcc33';
+    ctx.font = 'bold 18px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(this.trackData.name, px, py);
+    py += 22;
+
+    ctx.fillStyle = '#8b95a7';
+    ctx.font = '12px ui-monospace, monospace';
+    const leaderLap = this.vehicles.reduce((mx, v) => Math.max(mx, v.lap + 1), 1);
+    const totalLaps = this.track.totalLaps;
+    const stateLabel = this.state === 'countdown'
+      ? 'Countdown'
+      : this.state === 'finished'
+        ? 'Finished'
+        : `Lap ${Math.min(leaderLap, totalLaps)}/${totalLaps}`;
+    ctx.fillText(`${stateLabel}  ·  ${formatTime(this.elapsed)}  ·  ${this.vehicles.length} cars`, px, py);
+    py += 28;
+
+    // Leaderboard.
+    const sorted = this._rankedAll();
+    const rowH = 22;
+    const maxRows = Math.min(sorted.length, Math.floor((vp.h - (py - vp.y) - 16) / rowH));
+    ctx.font = '14px ui-monospace, monospace';
+    for (let i = 0; i < maxRows; i++) {
+      const v = sorted[i];
+      const rowY = py + i * rowH;
+      // Position
+      ctx.fillStyle = '#8b95a7';
+      ctx.fillText(`${(i + 1).toString().padStart(2, ' ')}.`, px, rowY);
+      // Car dot.
+      ctx.fillStyle = v.color;
+      ctx.beginPath();
+      ctx.arc(px + 36, rowY - 5, 5, 0, Math.PI * 2);
+      ctx.fill();
+      // Name.
+      ctx.fillStyle = v.isHuman ? '#fff' : '#cdd2db';
+      ctx.fillText(v.name, px + 50, rowY);
+      // Lap + status (right-aligned).
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#8b95a7';
+      const status = v.finished
+        ? (v.finishTime < 999 ? formatTime(v.finishTime) : 'DNF')
+        : `L${v.lap}/${this.track.totalLaps}`;
+      ctx.fillText(status, vp.x + vp.w - 24, rowY);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  }
+
+  _rankedAll() {
+    return this.vehicles.slice().sort((a, b) => {
+      if (a.finished && b.finished) return a.finishTime - b.finishTime;
+      if (a.finished) return -1;
+      if (b.finished) return 1;
+      return b.progress - a.progress;
+    });
   }
 
   _renderGhost(renderer) {

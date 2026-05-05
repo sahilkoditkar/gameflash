@@ -52,6 +52,11 @@ const THEMES = {
   }
 };
 
+// Global scale applied to all tracks. Bumping this enlarges every circuit's
+// world coordinates and road width together, so the player needs the camera
+// to follow them rather than seeing the whole track at once.
+const TRACK_SCALE = 1.8;
+
 export class Track {
   constructor({
     name,
@@ -60,15 +65,18 @@ export class Track {
     laps = 3,
     theme = 'countryside',
     decorationDensity = 0.5,
-    decorationSeed = 1
+    decorationSeed = 1,
+    scale = TRACK_SCALE
   }) {
     this.name = name;
-    this.halfWidth = halfWidth;
+    this.scale = scale;
+    this.halfWidth = halfWidth * scale;
     this.totalLaps = laps;
     this.theme = THEMES[theme] || THEMES.countryside;
     this.themeName = theme;
 
-    this.centerline = closedCenterline(controlPoints, 14);
+    const scaled = controlPoints.map(([x, y]) => [x * scale, y * scale]);
+    this.centerline = closedCenterline(scaled, 14);
 
     // Pre-compute segment lengths and tangents.
     this.segLen = new Array(this.centerline.length);
@@ -93,7 +101,7 @@ export class Track {
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
-    const pad = halfWidth + 80;
+    const pad = this.halfWidth + 80;
     this.bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
     // Start position: at segment 0, slightly behind the start line.
@@ -101,8 +109,8 @@ export class Track {
     const t = this.segTangent[startSeg];
     this.startAngle = Math.atan2(t.y, t.x);
     const start = this.centerline[startSeg];
-    this.startX = start.x - t.x * 30;
-    this.startY = start.y - t.y * 30;
+    this.startX = start.x - t.x * 30 * scale;
+    this.startY = start.y - t.y * 30 * scale;
 
     this.startGrid = this._buildStartGrid(8);
     this.decorations = this._buildDecorations(decorationDensity, decorationSeed);
@@ -114,13 +122,14 @@ export class Track {
     const nx = -t.y;
     const ny = t.x;
     const start = this.centerline[0];
+    const s = this.scale;
     for (let i = 0; i < slots; i++) {
       const row = Math.floor(i / 2);
       const side = i % 2 === 0 ? -1 : 1;
-      const ox = -t.x * (40 + row * 50);
-      const oy = -t.y * (40 + row * 50);
-      const lx = nx * side * 20;
-      const ly = ny * side * 20;
+      const ox = -t.x * (40 + row * 50) * s;
+      const oy = -t.y * (40 + row * 50) * s;
+      const lx = nx * side * 20 * s;
+      const ly = ny * side * 20 * s;
       grid.push({ x: start.x + ox + lx, y: start.y + oy + ly, angle: this.startAngle });
     }
     return grid;
@@ -132,6 +141,7 @@ export class Track {
     const out = [];
     const cl = this.centerline;
     const decoTypes = this.theme.decoTypes;
+    const s = this.scale;
     // Step at a fixed cadence; density controls per-side placement probability.
     const step = this.theme.barrierTight ? 3 : 4;
     for (let i = 0; i < cl.length; i += step) {
@@ -143,9 +153,9 @@ export class Track {
         if (rng() > density) continue;
         // Street circuits: barriers right against the track. Others: pulled out.
         const baseOffset = this.theme.barrierTight
-          ? this.halfWidth + 6
-          : this.halfWidth + 18 + range(rng, 0, 60);
-        const jitterAlong = range(rng, -8, 8);
+          ? this.halfWidth + 6 * s
+          : this.halfWidth + (18 + range(rng, 0, 60)) * s;
+        const jitterAlong = range(rng, -8, 8) * s;
         const px = a.x + t.x * jitterAlong + (-t.y) * side * baseOffset;
         const py = a.y + t.y * jitterAlong + (t.x) * side * baseOffset;
         const type = decoTypes[Math.floor(rng() * decoTypes.length)];
@@ -156,32 +166,32 @@ export class Track {
   }
 
   _makeDecoration(type, x, y, tan, rng) {
+    const s = this.scale;
     if (type === 'tree') {
       const palette = this.theme.treePalette;
       return {
         type: 'tree',
         x, y,
-        r: 9 + range(rng, 0, 5),
+        r: (9 + range(rng, 0, 5)) * s,
         color: palette[Math.floor(rng() * palette.length)]
       };
     }
     if (type === 'hay') {
-      return { type: 'hay', x, y, w: 18, h: 12, angle: range(rng, -0.3, 0.3) };
+      return { type: 'hay', x, y, w: 18 * s, h: 12 * s, angle: range(rng, -0.3, 0.3) };
     }
     if (type === 'rock') {
-      return { type: 'rock', x, y, r: 6 + range(rng, 0, 4) };
+      return { type: 'rock', x, y, r: (6 + range(rng, 0, 4)) * s };
     }
     if (type === 'palm') {
-      return { type: 'palm', x, y, r: 7 + range(rng, 0, 3) };
+      return { type: 'palm', x, y, r: (7 + range(rng, 0, 3)) * s };
     }
     if (type === 'grandstand') {
-      // Long thin block oriented along the local tangent, jittered position.
       return {
         type: 'grandstand',
         x, y,
         angle: Math.atan2(tan.y, tan.x),
-        w: 60 + range(rng, 0, 30),
-        h: 14
+        w: (60 + range(rng, 0, 30)) * s,
+        h: 14 * s
       };
     }
     if (type === 'barrier') {
@@ -189,11 +199,11 @@ export class Track {
         type: 'barrier',
         x, y,
         angle: Math.atan2(tan.y, tan.x),
-        w: 18,
-        h: 5
+        w: 18 * s,
+        h: 5 * s
       };
     }
-    return { type: 'rock', x, y, r: 6 };
+    return { type: 'rock', x, y, r: 6 * s };
   }
 
   project(x, y, aroundIdx = 0, window = 24) {
