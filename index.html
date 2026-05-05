@@ -10,36 +10,30 @@
   <link rel="stylesheet" href="./styles/main.css" />
 </head>
 <body>
-  <div id="app">
-    <header class="topbar">
-      <div class="brand">
+  <section id="launcher" class="launcher" aria-label="Game launcher">
+    <div class="launcher-inner">
+      <header class="launcher-header">
         <span class="logo">G</span>
-        <span class="title">GameFlash</span>
-      </div>
-      <nav class="topnav">
-        <button data-action="home" type="button">Home</button>
-        <button data-action="fullscreen" type="button">Fullscreen</button>
-      </nav>
-    </header>
+        <h1>GameFlash</h1>
+      </header>
+      <ul id="game-grid" class="game-grid"></ul>
+      <p class="launcher-tip">Tip: connect a gamepad — it auto-binds. <kbd>Esc</kbd> returns here from any game.</p>
+    </div>
+  </section>
 
-    <main id="stage">
-      <section id="launcher" class="launcher" aria-label="Game launcher">
-        <h1>Pick a game</h1>
-        <ul id="game-grid" class="game-grid"></ul>
-      </section>
+  <section id="game-host" class="game-host" hidden>
+    <canvas id="game-canvas" tabindex="0" aria-label="Game viewport"></canvas>
+    <div id="hud-layer" class="hud-layer" aria-live="polite"></div>
+    <div id="overlay-layer" class="overlay-layer" hidden></div>
 
-      <section id="game-host" class="game-host" hidden>
-        <canvas id="game-canvas" tabindex="0" aria-label="Game viewport"></canvas>
-        <div id="hud-layer" class="hud-layer" aria-live="polite"></div>
-        <div id="overlay-layer" class="overlay-layer" hidden></div>
-      </section>
-    </main>
+    <button id="menu-button" type="button" aria-label="Back to menu" title="Back to menu (Esc)">
+      &larr; Menu
+    </button>
+  </section>
 
-    <footer class="bottombar">
-      <span id="status-text">Ready.</span>
-      <span id="fps-text" aria-label="Frames per second">&mdash;</span>
-    </footer>
-  </div>
+  <noscript>
+    <div class="noscript">GameFlash needs JavaScript enabled to run.</div>
+  </noscript>
 
   <script type="module" src="./src/main.js"></script>
 </body>
