@@ -22,100 +22,104 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
-#app {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  height: 100%;
-}
+/* The hidden attribute must always win over our display rules. */
+[hidden] { display: none !important; }
 
-.topbar, .bottombar {
+/* --- Launcher (full viewport) --- */
+.launcher {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 204, 51, 0.06), transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(102, 224, 163, 0.05), transparent 50%),
+    var(--bg);
+}
+.launcher-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 24px 32px;
+}
+.launcher-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
+  gap: 12px;
+  margin-bottom: 28px;
 }
-.bottombar {
-  border-top: 1px solid var(--border);
-  border-bottom: 0;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+.launcher-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
 }
-
-.brand { display: flex; align-items: center; gap: 10px; }
 .logo {
   display: inline-grid;
   place-items: center;
-  width: 26px; height: 26px;
-  border-radius: 6px;
+  width: 36px; height: 36px;
+  border-radius: 8px;
   background: var(--accent);
   color: var(--bg);
   font-weight: 700;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.title { font-weight: 600; letter-spacing: 0.4px; }
-
-.topnav button {
-  background: transparent;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  padding: 6px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.topnav button:hover { border-color: var(--accent); }
-
-#stage {
-  position: relative;
-  overflow: hidden;
+  font-size: 18px;
 }
 
-.launcher {
-  padding: 24px;
-  height: 100%;
-  overflow: auto;
-}
-.launcher h1 {
-  margin: 0 0 16px;
-  font-size: 22px;
-  font-weight: 600;
-}
 .game-grid {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
 }
 .game-card {
   background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
+  border-radius: 12px;
+  padding: 20px;
   cursor: pointer;
-  transition: transform 80ms ease, border-color 80ms ease;
+  transition: transform 80ms ease, border-color 80ms ease, background 80ms ease;
 }
-.game-card:hover { border-color: var(--accent); transform: translateY(-1px); }
-.game-card h2 { margin: 0 0 6px; font-size: 16px; }
-.game-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
-.game-card .meta { margin-top: 10px; font-size: 11px; color: var(--accent-2); letter-spacing: 0.4px; text-transform: uppercase; }
+.game-card:hover, .game-card:focus-visible {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  outline: none;
+}
+.game-card h2 { margin: 0 0 6px; font-size: 17px; }
+.game-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.game-card .meta {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--accent-2);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
 
+.launcher-tip {
+  margin-top: 32px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.launcher-tip kbd {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+/* --- Game host (full viewport) --- */
 .game-host {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
   background: #000;
 }
 #game-canvas {
   display: block;
-  background: #000;
   width: 100%;
   height: 100%;
+  background: #000;
   outline: none;
   image-rendering: pixelated;
 }
@@ -148,7 +152,6 @@ html, body {
   place-items: center;
   background: rgba(0,0,0,0.6);
   z-index: 10;
-  pointer-events: auto;
 }
 .overlay-card {
   background: var(--bg-2);
@@ -174,4 +177,32 @@ html, body {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--border);
+}
+
+/* Floating "back to menu" button — only visible in-game. */
+#menu-button {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  background: rgba(12, 15, 20, 0.55);
+  color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: 13px/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+#menu-button:hover { border-color: var(--accent); }
+
+.noscript {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  font-size: 15px;
 }
