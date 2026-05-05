@@ -20,11 +20,13 @@ const STEER_RATE = 2.4;         // rad/sec at full lock at full speed
 const STEER_SPEED_FACTOR = 0.55;
 
 export class Vehicle {
-  constructor({ x, y, angle, color = '#ffcc33', name = 'Car', isHuman = false }) {
+  constructor({ x, y, angle, color = '#ffcc33', name = 'Car', isHuman = false, gripMul = 1 }) {
     this.body = new Body({ x, y, angle, radius: 14, mass: 1 });
     this.color = color;
     this.name = name;
     this.isHuman = isHuman;
+    // Grip multiplier: 1 = clear, <1 = wet (less lateral grip = more drift).
+    this.gripMul = Math.max(0.2, Math.min(1.5, gripMul));
 
     this.throttle = 0;     // -1..1
     this.steer = 0;        // -1..1
@@ -83,7 +85,8 @@ export class Vehicle {
 
     // Off-track penalty: extra drag, reduced grip.
     let dragK = ROLLING_DRAG;
-    let gripDecay = 0.0008;   // base lateral grip (smaller -> stickier)
+    // Base lateral grip — smaller is stickier. Wet weather scales it up.
+    let gripDecay = 0.0008 / this.gripMul;
     let topSpeedFactor = 1;
     this.offTrack = false;
     if (track) {
