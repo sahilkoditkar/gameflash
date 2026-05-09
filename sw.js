@@ -5,7 +5,7 @@
 //   - Network-only for non-GET and cross-origin requests.
 // The cache name is versioned; bumping the version invalidates the old shell.
 
-const CACHE_VERSION = 'gameflash-v13';
+const CACHE_VERSION = 'gameflash-v14';
 const SHELL_PATHS = [
   './',
   './index.html',
