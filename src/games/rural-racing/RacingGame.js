@@ -395,7 +395,7 @@ export class RacingGame extends Scene {
 
   update(dt) { if (this.track) return this._update(dt); }
   render(renderer) {
-    if (!this.track) { renderer.clear('#0c0f14'); return; }
+    if (!this.track) { renderer.clear('#0a0a0a'); return; }
     return this._render(renderer);
   }
 
@@ -781,7 +781,7 @@ export class RacingGame extends Scene {
     const ctx = renderer.ctx;
     ctx.save();
     ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
-    ctx.fillStyle = '#0c0f14';
+    ctx.fillStyle = '#0a0a0a';
     const n = layout.length;
     if (n === 2) {
       ctx.fillRect(renderer.width / 2 - 1, 0, 2, renderer.height);
@@ -830,7 +830,7 @@ export class RacingGame extends Scene {
     ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
 
     // Panel background.
-    ctx.fillStyle = 'rgba(12, 15, 20, 0.6)';
+    ctx.fillStyle = 'rgba(10, 10, 10, 0.72)';
     ctx.fillRect(x, y, m.w, m.h);
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
     ctx.lineWidth = 1;
@@ -845,7 +845,7 @@ export class RacingGame extends Scene {
     ctx.stroke(m.path);
     // Start/finish marker.
     const start = this.track.centerline[0];
-    ctx.fillStyle = '#14b8a6';
+    ctx.fillStyle = '#f59e0b';
     ctx.beginPath();
     ctx.arc(m.ox + start.x * m.scale, m.oy + start.y * m.scale, 2.5, 0, Math.PI * 2);
     ctx.fill();
@@ -878,7 +878,7 @@ export class RacingGame extends Scene {
     ctx.setTransform(renderer.dpr, 0, 0, renderer.dpr, 0, 0);
 
     // Background.
-    ctx.fillStyle = '#0c0f14';
+    ctx.fillStyle = '#0a0a0a';
     ctx.fillRect(vp.x, vp.y, vp.w, vp.h);
     // Subtle inner border.
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
@@ -888,14 +888,14 @@ export class RacingGame extends Scene {
     // Header.
     const px = vp.x + 24;
     let py = vp.y + 32;
-    ctx.fillStyle = '#14b8a6';
+    ctx.fillStyle = '#f59e0b';
     ctx.font = 'bold 18px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillText(this.trackData.name, px, py);
     py += 22;
 
-    ctx.fillStyle = '#8b95a7';
+    ctx.fillStyle = '#a3a3a3';
     ctx.font = '12px ui-monospace, monospace';
     const leaderLap = this.vehicles.reduce((mx, v) => Math.max(mx, v.lap + 1), 1);
     const totalLaps = this.track.totalLaps;
@@ -916,7 +916,7 @@ export class RacingGame extends Scene {
       const v = sorted[i];
       const rowY = py + i * rowH;
       // Position
-      ctx.fillStyle = '#8b95a7';
+      ctx.fillStyle = '#a3a3a3';
       ctx.fillText(`${(i + 1).toString().padStart(2, ' ')}.`, px, rowY);
       // Car dot.
       ctx.fillStyle = v.color;
@@ -928,7 +928,7 @@ export class RacingGame extends Scene {
       ctx.fillText(v.name, px + 50, rowY);
       // Lap + status (right-aligned).
       ctx.textAlign = 'right';
-      ctx.fillStyle = '#8b95a7';
+      ctx.fillStyle = '#a3a3a3';
       const status = v.finished
         ? (v.finishTime < 999 ? formatTime(v.finishTime) : 'DNF')
         : `L${v.lap}/${this.track.totalLaps}`;
@@ -1009,7 +1009,7 @@ export class RacingGame extends Scene {
     const rows = sorted.map((v, i) => {
       const t = v.finished && v.finishTime < 999 ? `${v.finishTime.toFixed(2)}s` : 'DNF';
       const best = v.bestLapTime !== Infinity ? `best ${v.bestLapTime.toFixed(2)}s` : '';
-      return `<tr><td>${i + 1}</td><td style="color:${v.color}">${v.name}</td><td>${t}</td><td style="color:#8b95a7">${best}</td></tr>`;
+      return `<tr><td>${i + 1}</td><td style="color:${v.color}">${v.name}</td><td>${t}</td><td style="color:#a3a3a3">${best}</td></tr>`;
     }).join('');
     card.innerHTML = `
       <h2>Race finished</h2>

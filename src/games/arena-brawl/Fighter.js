@@ -95,7 +95,7 @@ export class Fighter {
     ctx.arc(0, 0, b.radius, 0, Math.PI * 2);
     ctx.fill();
     // Facing indicator
-    ctx.strokeStyle = '#0c0f14';
+    ctx.strokeStyle = '#0a0a0a';
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(0, 0);

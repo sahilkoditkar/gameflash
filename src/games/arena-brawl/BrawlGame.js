@@ -9,7 +9,7 @@ import { Fighter } from './Fighter.js';
 import { resolveCircles, clampToRectInterior } from '../../engine/physics/Collision.js';
 
 const ARENA = { minX: -400, minY: -260, maxX: 400, maxY: 260 };
-const COLORS = ['#ffcc33', '#66e0a3', '#ff6b6b', '#7aa9ff'];
+const COLORS = ['#fbbf24', '#34d399', '#f87171', '#60a5fa'];
 
 const KB_LAYOUTS = [
   {
@@ -188,15 +188,15 @@ export class BrawlGame extends Scene {
   }
 
   render(renderer) {
-    renderer.clear('#0c0f14');
+    renderer.clear('#0a0a0a');
     renderer.pushWorld();
     const c = renderer.ctx;
 
     // Arena floor
-    c.fillStyle = '#1f2632';
+    c.fillStyle = '#222222';
     c.fillRect(ARENA.minX, ARENA.minY, ARENA.maxX - ARENA.minX, ARENA.maxY - ARENA.minY);
     // Arena border
-    c.strokeStyle = '#3a3f48';
+    c.strokeStyle = '#3d3d3d';
     c.lineWidth = 6;
     c.strokeRect(ARENA.minX, ARENA.minY, ARENA.maxX - ARENA.minX, ARENA.maxY - ARENA.minY);
     // Center grid

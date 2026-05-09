@@ -14,15 +14,18 @@
 import { TrackPicker } from './TrackPicker.js';
 import { TRACKS } from './tracks/index.js';
 
+// Car colours. Eight distinct hues that all read clearly against the grass /
+// asphalt of every track. None of them sit too close to the UI accent
+// (amber-500 #f59e0b) so HUD chrome and a player's car never get confused.
 export const COLORS = [
-  { id: 'yellow', hex: '#ffcc33' },
-  { id: 'green',  hex: '#66e0a3' },
-  { id: 'red',    hex: '#ff6b6b' },
-  { id: 'blue',   hex: '#7aa9ff' },
-  { id: 'purple', hex: '#c98bff' },
-  { id: 'orange', hex: '#ffa15a' },
-  { id: 'cyan',   hex: '#5fdde6' },
-  { id: 'pink',   hex: '#ff8fb1' }
+  { id: 'amber',   hex: '#fbbf24' },
+  { id: 'emerald', hex: '#34d399' },
+  { id: 'rose',    hex: '#f87171' },
+  { id: 'sky',     hex: '#60a5fa' },
+  { id: 'violet',  hex: '#c084fc' },
+  { id: 'teal',    hex: '#2dd4bf' },
+  { id: 'cyan',    hex: '#22d3ee' },
+  { id: 'pink',    hex: '#f472b6' }
 ];
 
 export const DIFFICULTY = {
