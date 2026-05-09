@@ -13,8 +13,9 @@ export default {
   decorationDensity: 0.85,
   decorationSeed: 7321,
   controlPoints: [
-    // Start straight (east), pit complex
-    [ -280,   400], [ -120,   410], [   60,   420],
+    // Pit straight (start/finish at first point, going east). All three
+    // points share y so the spline runs dead straight through start.
+    [ -300,   410], [ -120,   410], [   60,   410],
     // La Source (very tight right hairpin)
     [  170,   400], [  220,   320], [  170,   260], [   80,   260],
     // Eau Rouge dive (left), Raidillon climb (right)
@@ -36,8 +37,10 @@ export default {
     // Blanchimont (very fast left)
     [ -240,   -80], [ -280,    30],
     // Bus Stop chicane (right-left-right)
-    [ -290,   140], [ -230,   200], [ -290,   260], [ -260,   320],
-    // Back onto pit straight
-    [ -300,   380]
+    [ -290,   140], [ -230,   200], [ -290,   260], [ -240,   320],
+    // Final corner — straightens the line south of the pit straight so
+    // the closing turn back to start is a clean ~90° instead of the
+    // previous ~135° kink that felt like a 270° wraparound.
+    [ -360,   380]
   ]
 };
