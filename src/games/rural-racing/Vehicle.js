@@ -20,7 +20,7 @@ const STEER_RATE = 2.4;         // rad/sec at full lock at full speed
 const STEER_SPEED_FACTOR = 0.55;
 
 export class Vehicle {
-  constructor({ x, y, angle, color = '#ffcc33', name = 'Car', isHuman = false, gripMul = 1 }) {
+  constructor({ x, y, angle, color = '#fbbf24', name = 'Car', isHuman = false, gripMul = 1 }) {
     this.body = new Body({ x, y, angle, radius: 14, mass: 1 });
     this.color = color;
     this.name = name;
@@ -167,7 +167,7 @@ export class Vehicle {
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.fillRect(13, -10, 3, 20);
     // Wheels
-    ctx.fillStyle = '#0c0f14';
+    ctx.fillStyle = '#0a0a0a';
     ctx.fillRect(-13, -12, 6, 4);
     ctx.fillRect(-13, 8, 6, 4);
     ctx.fillRect(8, -12, 6, 4);
