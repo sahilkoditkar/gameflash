@@ -114,7 +114,13 @@ export class Vehicle {
     let topSpeedFactor = 1;
     this.offTrack = false;
     if (track) {
-      const proj = track.project(b.x, b.y, this.segIndex, 4);
+      // Window has to be wide enough that on tight S-bends (Maggotts/Becketts,
+      // Miami's stadium zigzag, Spa's Eau Rouge) the car's true nearest
+      // segment is still inside the search range. window=4 covered only ~9
+      // segments which on densely-sampled twisty sections was too narrow:
+      // project would return a falsely-large distance and isOffTrack would
+      // fire while the car was still on the racing line.
+      const proj = track.project(b.x, b.y, this.segIndex, 12);
       this.segIndex = proj.segIndex;
       this.segT = proj.t;
       if (track.isOffTrack(proj.distance)) {

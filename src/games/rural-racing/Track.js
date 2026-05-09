@@ -484,5 +484,9 @@ export class Track {
     }
   }
 
-  isOffTrack(distance) { return distance > this.halfWidth - 6; }
+  // Off-track when the car center has gone past the asphalt edge plus a
+  // small kerb-forgiveness pad. The previous threshold (halfWidth - 6) was
+  // backwards: it penalised the player while their CENTER was still 6px
+  // inside the asphalt — i.e. while the whole car was clearly on track.
+  isOffTrack(distance) { return distance > this.halfWidth + 4; }
 }
