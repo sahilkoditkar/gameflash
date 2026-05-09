@@ -57,6 +57,17 @@ const THEMES = {
 // to follow them rather than seeing the whole track at once.
 const TRACK_SCALE = 1.8;
 
+// Effective "keep clear" radius for a decoration. Conservative: rectangles
+// use half their longest side so the check works regardless of orientation.
+// Used by Track._decoOverlapsTrack to drop trees/etc. that would land on
+// the racing surface (e.g. on the inside of a hairpin or across a parallel
+// straight, where the local placement perpendicular crosses another segment).
+function decoFootprintRadius(deco) {
+  if (deco.r != null) return deco.r;
+  if (deco.w != null && deco.h != null) return Math.max(deco.w, deco.h) / 2;
+  return 8;
+}
+
 export class Track {
   constructor({
     name,
@@ -159,10 +170,43 @@ export class Track {
         const px = a.x + t.x * jitterAlong + (-t.y) * side * baseOffset;
         const py = a.y + t.y * jitterAlong + (t.x) * side * baseOffset;
         const type = decoTypes[Math.floor(rng() * decoTypes.length)];
-        out.push(this._makeDecoration(type, px, py, t, rng));
+        const deco = this._makeDecoration(type, px, py, t, rng);
+        // Reject anything that landed on the racing surface. The placement
+        // offset is perpendicular to the LOCAL segment, which is fine for
+        // straights but in hairpins, figure-eights (Suzuka's crossover) and
+        // parallel straights (Monza's curva di Lesmo, Spa's Eau Rouge), that
+        // local perpendicular can cross another part of the same track.
+        if (this._decoOverlapsTrack(deco, i)) continue;
+        out.push(deco);
       }
     }
     return out;
+  }
+
+  // True if a decoration would clip the racing surface on a segment far
+  // from where it was placed. A window around `placedAtIdx` is trusted —
+  // that's where the placement code already pushed the deco off the track
+  // by --halfWidth + offset—and the check is only for OTHER stretches of
+  // tarmac that happen to be near this world position.
+  _decoOverlapsTrack(deco, placedAtIdx) {
+    const r = decoFootprintRadius(deco);
+    // Tree's near edge crosses asphalt edge when distance(center) < halfWidth + r.
+    const minClearance = this.halfWidth + r;
+    const cl = this.centerline;
+    const n = cl.length;
+    const skipWindow = 12;
+    for (let j = 0; j < n; j++) {
+      // Closed-loop distance between segment indices.
+      let dj = Math.abs(j - placedAtIdx);
+      if (dj > n / 2) dj = n - dj;
+      if (dj <= skipWindow) continue;
+      const a = cl[j];
+      const b = cl[(j + 1) % n];
+      if (distToSegment(deco.x, deco.y, a.x, a.y, b.x, b.y) < minClearance) {
+        return true;
+      }
+    }
+    return false;
   }
 
   _makeDecoration(type, x, y, tan, rng) {
