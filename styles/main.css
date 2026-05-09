@@ -30,9 +30,11 @@
   --bg-translucent:   rgba(10, 10, 10, 0.72);
 
   /* text */
-  --text:   #fafafa;
-  --muted:  #a3a3a3;
-  --dim:    #737373;
+  --text:      #fafafa;
+  --text-soft: #e0e0e0;   /* descriptive body — readable at small sizes without
+                             screaming pure white. ~16:1 vs --bg, AAA. */
+  --muted:     #c4c4c4;   /* secondary; bumped from #a3a3a3 for comfort. ~12:1, AAA. */
+  --dim:       #737373;
 
   /* accent */
   --accent:        #f59e0b;
@@ -210,13 +212,20 @@ html, body {
 }
 .hud-panel .value { font-size: 15px; color: var(--text); }
 
+/* Scrollable backdrop. `place-items: safe center` keeps the card centered
+   when it fits, but falls back to start-alignment when the card is taller
+   than the viewport — so tall content (e.g. the track picker grid) stays
+   reachable instead of being clipped above the fold. */
 .overlay-layer {
   position: absolute;
   inset: 0;
   display: grid;
-  place-items: center;
+  place-items: safe center;
+  padding: 24px 16px;
   background: rgba(0, 0, 0, 0.72);
   z-index: 10;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .overlay-card {
   background: var(--surface);
@@ -234,7 +243,12 @@ html, body {
   letter-spacing: -0.015em;
   color: var(--text);
 }
-.overlay-card p { color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
+.overlay-card p {
+  color: var(--text-soft);
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.55;
+}
 
 /* Buttons inside overlay/card surfaces sit on --surface-hover so they stay
    visibly raised. Hover lifts them another tier to --surface-pressed. */
@@ -326,7 +340,13 @@ html, body {
   letter-spacing: -0.015em;
   color: var(--text);
 }
-.wizard-card > p { margin: 0 0 20px; color: var(--muted); text-align: left; line-height: 1.5; }
+.wizard-card > p {
+  margin: 0 0 20px;
+  color: var(--text-soft);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.55;
+}
 
 .wizard-choices {
   display: grid;
@@ -365,15 +385,18 @@ html, body {
   outline: none;
 }
 .mode-choice .big {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.005em;
   color: var(--text);
 }
 .mode-choice span:not(.big) {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
+  /* Description text under each mode title. Bumped from 12px/--muted to
+     13px/--text-soft because at small sizes the previous --muted #a3a3a3
+     was straining to read across long blurbs. */
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .wizard-choice {
@@ -427,9 +450,13 @@ html, body {
   cursor: pointer;
   transition: background 80ms ease, border-color 80ms ease, transform 80ms ease;
 }
+/* Hover matches .mode-choice / .wizard-choice / .track-tile so the four
+   selection surfaces feel like one component family. The active state stays
+   stronger (filled accent + scale + ring) since opt-btn is the only one
+   with a persistent "selected" state. */
 .opt-btn:hover {
   background: var(--surface-pressed);
-  border-color: var(--border-strong);
+  border-color: var(--accent);
 }
 .opt-btn.active {
   background: var(--accent);
