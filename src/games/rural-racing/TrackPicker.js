@@ -93,12 +93,12 @@ export class TrackPicker {
     const bg = document.createElementNS(svgNS, 'rect');
     bg.setAttribute('width', String(W));
     bg.setAttribute('height', String(H));
-    bg.setAttribute('fill', '#1a1f1a');
+    bg.setAttribute('fill', '#0a0a0a');
     svg.appendChild(bg);
     const outer = document.createElementNS(svgNS, 'path');
     outer.setAttribute('d', d);
     outer.setAttribute('fill', 'none');
-    outer.setAttribute('stroke', '#454a55');
+    outer.setAttribute('stroke', '#3d3d3d');
     outer.setAttribute('stroke-width', '12');
     outer.setAttribute('stroke-linejoin', 'round');
     outer.setAttribute('stroke-linecap', 'round');
@@ -106,7 +106,7 @@ export class TrackPicker {
     const inner = document.createElementNS(svgNS, 'path');
     inner.setAttribute('d', d);
     inner.setAttribute('fill', 'none');
-    inner.setAttribute('stroke', '#ffd166');
+    inner.setAttribute('stroke', '#f59e0b');
     inner.setAttribute('stroke-width', '1.2');
     inner.setAttribute('stroke-dasharray', '3 4');
     svg.appendChild(inner);
@@ -114,7 +114,7 @@ export class TrackPicker {
     dot.setAttribute('cx', startX.toFixed(1));
     dot.setAttribute('cy', startY.toFixed(1));
     dot.setAttribute('r', '4');
-    dot.setAttribute('fill', '#66e0a3');
+    dot.setAttribute('fill', '#34d399');
     svg.appendChild(dot);
     return svg;
   }
